@@ -1,0 +1,17 @@
+database:
+    host: r02mgmt02
+    port: 45432
+    user: iptracking
+    password: 57-determine-BULGARIA-UNEMPLOYMENT-everyone-children-38
+    dbname: iptracking
+pipe-file: iptracking.fifo
+log-pool:
+    records:
+        delta: 32
+        min: 32
+        max: 0
+    push-wait-seconds:
+        min: 5
+        max: 600
+        delta: 5
+        grow-threshold: 4

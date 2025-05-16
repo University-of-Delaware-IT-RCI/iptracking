@@ -1,0 +1,77 @@
+
+
+#ifndef __IPTRACKING_DAEMON_H__
+#define __IPTRACKING_DAEMON_H__
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <getopt.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <time.h>
+#include <ctype.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+
+#include <yaml.h>
+#include <pthread.h>
+#include <libpq-fe.h>
+
+//
+
+#if defined __INTEL_COMPILER
+#   define CC_VENDOR  "Intel"
+#   define CC_VERSION __INTEL_COMPILER
+#elif defined __INTEL_LLVM_COMPILER
+#   define CC_VENDOR  "Intel LLVM"
+#   define CC_VERSION __INTEL_LLVM_COMPILER
+#elif defined __clang__
+#   define CC_VENDOR  "Clang"
+#   define CC_VERSION ( __clang_major__ * 10000 \
+                        + __clang_minor__ * 100 \
+                        + __clang_patchlevel__ )
+#elif defined __GNUC__
+#   define CC_VENDOR  "GNU"
+#   define CC_VERSION ( __GNUC__ * 10000 \
+                        + __GNUC_MINOR__ * 100 \
+                        + __GNUC_PATCHLEVEL__ )
+#else
+#   define CC_VENDOR  "Unknown compiler"
+#   define CC_VERSION 0
+#endif
+
+//
+
+#define IPTRACKING_VERSION_STR "@PROJECT_VERSION@"
+
+#define IPTRACKING_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define IPTRACKING_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define IPTRACKING_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define IPTRACKING_VERSION_TWEAK @PROJECT_VERSION_TWEAK@
+
+//
+
+#define CONFIGURATION_FILEPATH_DEFAULT "@CONFIGURATION_FILEPATH_DEFAULT@"
+
+//
+
+#define LOG_POOL_RECORDS_MIN 32
+#define LOG_POOL_RECORDS_MAX 0
+#define LOG_POOL_RECORDS_DELTA 32
+
+//
+
+#define LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_MIN 5
+#define LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_MAX 600
+#define LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT_THRESH 4
+#define LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT 5
+
+//
+
+#define PIPE_FILEPATH_DEFAULT "@PIPE_FILEPATH_DEFAULT@"
+
+#endif /* __IPTRACKING_DAEMON_H__ */
