@@ -1,18 +1,10 @@
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <getopt.h>
-#include <limits.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
-#include <time.h>
-#include <ctype.h>
-#include <errno.h>
-#include <pthread.h>
-
-//
+/*
+ * iptracking
+ * log_queue.c
+ *
+ * Event-logging queue API.
+ *
+ */
 
 #include "log_queue.h"
 

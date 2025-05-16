@@ -1,28 +1,15 @@
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <getopt.h>
-#include <limits.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
-#include <time.h>
-#include <ctype.h>
-#include <errno.h>
-#include <sys/stat.h>
-
-//
-
-#include <yaml.h>
-#include <pthread.h>
-#include <libpq-fe.h>
-
-//
+/*
+ * iptracking
+ * iptracking-daemon.c
+ *
+ * Main program.
+ *
+ */
 
 #include "iptracking-daemon.h"
 #include "logging.h"
 #include "log_queue.h"
+#include "yaml-helpers.h"
 
 //
 
@@ -151,135 +138,6 @@ log_queue_thread_entry(
 
 //
 
-yaml_node_t*
-__config_doc_node_at_path(
-    yaml_document_t *config_doc,
-    yaml_node_t     *node,
-    int             level,
-    const char      *path
-)
-{
-    /* Do we actually have a node? */
-    if ( ! node ) return NULL;
-    
-    /* Return this node? */
-    if ( ! *path ) return node;
-    
-    switch ( node->type ) {
-        case YAML_NO_NODE:
-            return NULL;
-            
-        case YAML_SCALAR_NODE:
-            if ( ! *path ) return node;
-            break;
-        
-        case YAML_SEQUENCE_NODE: {
-            long                idx;
-            char                *endptr;
-            yaml_node_item_t    *item = node->data.sequence.items.start;
-            
-            if ( *path != '[' ) return NULL;
-            idx = strtol(++path, &endptr, 0);
-            if ( (idx < 0) || (endptr == path) ) return NULL;
-            if ( *path != ']' ) return NULL;
-            path++;
-            item += idx;
-            if ( item < node->data.sequence.items.top ) {
-                return __config_doc_node_at_path(config_doc, yaml_document_get_node(config_doc, *item), level + 1, path);
-            }
-            break;
-        }
-        
-        case YAML_MAPPING_NODE: {
-            yaml_node_pair_t    *ps, *pe;
-            const char          *endptr = path;
-            
-            if ( level > 0 ) {
-                if ( *path != '.' ) return NULL;
-                endptr = ++path;
-            }
-            while ( *endptr && (*endptr != '.') && (*endptr != '[') ) endptr++;
-            if ( endptr == path ) return NULL;
-            ps = node->data.mapping.pairs.start;
-            pe = node->data.mapping.pairs.top;
-            while ( ps < pe ) {
-                yaml_node_t     *k = yaml_document_get_node(config_doc, ps->key);
-                
-                if ( k && (k->type == YAML_SCALAR_NODE) ) {
-                    size_t      s_len = endptr - path;
-                    
-                    if ( (s_len == k->data.scalar.length) && (strncmp(path, (const char*)k->data.scalar.value, s_len) == 0) ) {
-                        return __config_doc_node_at_path(config_doc, yaml_document_get_node(config_doc, ps->value), level + 1, endptr);
-                    }
-                }
-                ps++;
-            }
-            break;
-        }
-    
-    }
-    return NULL;
-}
-
-//
-
-const char*
-__config_scalar_value(
-    yaml_node_t *node
-)
-{
-    if ( node->type == YAML_SCALAR_NODE ) return (const char*)node->data.scalar.value;
-    return NULL;
-}
-
-//
-
-bool
-__config_scalar_value_int(
-    yaml_node_t *node,
-    int         *value
-)
-{
-    if ( node->type == YAML_SCALAR_NODE ) {
-        long    int_val;
-        char    *endptr;
-        
-        int_val = strtol((const char*)node->data.scalar.value, &endptr, 0);
-        if ( (endptr > (char*)node->data.scalar.value) && !*endptr ) {
-            if ( (int_val >= INT_MIN) && (int_val <= INT_MAX) ) {
-                *value = (int)int_val;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-//
-
-bool
-__config_scalar_value_uint32(
-    yaml_node_t *node,
-    uint32_t    *value
-)
-{
-    if ( node->type == YAML_SCALAR_NODE ) {
-        long long   int_val;
-        char        *endptr;
-        
-        int_val = strtoll((const char*)node->data.scalar.value, &endptr, 0);
-        if ( (endptr > (char*)node->data.scalar.value) && !*endptr ) {
-            if ( (int_val >= 0) && (int_val <= (long long)UINT32_MAX) ) {
-                *value = (uint32_t)int_val;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-//
-
 bool
 config_read_yaml_file(
     const char  *fpath
@@ -310,13 +168,13 @@ config_read_yaml_file(
                         /*
                          * Check for any database config items:
                          */
-                        if ( (node = __config_doc_node_at_path(&config_doc, root_node, 0, "database")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "database")) ) {
                             const char*     *keys = db_conn_keys;
                             yaml_node_t     *dbnode;
                             
                             while ( *keys ) {
-                                if ( (dbnode = __config_doc_node_at_path(&config_doc, node, 0, *keys)) ) {
-                                    v = __config_scalar_value(dbnode);
+                                if ( (dbnode = yaml_helper_doc_node_at_path(&config_doc, node, 0, *keys)) ) {
+                                    v = yaml_helper_get_scalar_value(dbnode);
                                     if ( v ) {
                                         db_conn_keywords[db_conn_idx] = *keys;
                                         db_conn_values[db_conn_idx++] = v;
@@ -328,8 +186,8 @@ config_read_yaml_file(
                         /*
                          * Check for the pipe file path:
                          */
-                        if ( (node = __config_doc_node_at_path(&config_doc, root_node, 0, "pipe-file")) ) {
-                            const char  *s = __config_scalar_value(node);
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "pipe-file")) ) {
+                            const char  *s = yaml_helper_get_scalar_value(node);
                             
                             if ( ! s ) {
                                 ERROR("Configuration: invalid pipe-file value");
@@ -341,25 +199,25 @@ config_read_yaml_file(
                         /*
                          * Check for any log-pool config items:
                          */
-                        if ( (node = __config_doc_node_at_path(&config_doc, root_node, 0, "log-pool.records")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "log-pool.records")) ) {
                             yaml_node_t     *val_node;
                             
-                            if ( (val_node = __config_doc_node_at_path(&config_doc, node, 0, "min")) ) {
-                                if ( ! __config_scalar_value_uint32(val_node, &log_pool_records_min) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "min")) ) {
+                                if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_min) ) {
                                     ERROR("Configuration: invalid log-pool.records.min value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = __config_doc_node_at_path(&config_doc, node, 0, "max")) ) {
-                                if ( ! __config_scalar_value_uint32(val_node, &log_pool_records_max) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "max")) ) {
+                                if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_max) ) {
                                     ERROR("Configuration: invalid log-pool.records.max value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = __config_doc_node_at_path(&config_doc, node, 0, "delta")) ) {
-                                if ( ! __config_scalar_value_uint32(val_node, &log_pool_records_delta) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "delta")) ) {
+                                if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_delta) ) {
                                     ERROR("Configuration: invalid log-pool.records.delta value");
                                     rc = false;
                                     break;
@@ -369,32 +227,32 @@ config_read_yaml_file(
                         /*
                          * Check for any wait time config items:
                          */
-                        if ( (node = __config_doc_node_at_path(&config_doc, root_node, 0, "log-pool.push-wait-seconds")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "log-pool.push-wait-seconds")) ) {
                             yaml_node_t     *val_node;
                             
-                            if ( (val_node = __config_doc_node_at_path(&config_doc, node, 0, "min")) ) {
-                                if ( ! __config_scalar_value_int(val_node, &log_pool_push_wait_seconds_min) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "min")) ) {
+                                if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_min) ) {
                                     ERROR("Configuration: invalid log-pool.push-wait-seconds.min value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = __config_doc_node_at_path(&config_doc, node, 0, "max")) ) {
-                                if ( ! __config_scalar_value_int(val_node, &log_pool_push_wait_seconds_max) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "max")) ) {
+                                if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_max) ) {
                                     ERROR("Configuration: invalid log-pool.push-wait-seconds.max value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = __config_doc_node_at_path(&config_doc, node, 0, "delta")) ) {
-                                if ( ! __config_scalar_value_int(val_node, &log_pool_push_wait_seconds_dt) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "delta")) ) {
+                                if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_dt) ) {
                                     ERROR("Configuration: invalid log-pool.push-wait-seconds.delta value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = __config_doc_node_at_path(&config_doc, node, 0, "grow-threshold")) ) {
-                                if ( ! __config_scalar_value_int(val_node, &log_pool_push_wait_seconds_dt_thresh) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "grow-threshold")) ) {
+                                if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_dt_thresh) ) {
                                     ERROR("Configuration: invalid log-pool.push-wait-seconds.grow-threshold value");
                                     rc = false;
                                     break;

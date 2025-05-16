@@ -1,16 +1,15 @@
+/*
+ * iptracking
+ * logging.c
+ *
+ * Informational messaging API.
+ *
+ */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdarg.h>
-#include <time.h>
-#include <pthread.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <errno.h>
-
-//
-
+#include "iptracking-daemon.h"
 #include "logging.h"
+
+#include <stdarg.h>
 
 //
 

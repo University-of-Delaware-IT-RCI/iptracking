@@ -1,8 +1,15 @@
+/*
+ * iptracking
+ * logging.h
+ *
+ * Informational messaging API.
+ *
+ */
 
 #ifndef __LOGGING_H__
 #define __LOGGING_H__
 
-enum logging_level_e {
+enum logging_level {
     logging_level_fatal = 0,
     logging_level_error,
     logging_level_warn,
@@ -20,4 +27,4 @@ void logging_printf(int level, const char  *__restrict __format, ...);
 #define INFO(FMT,...) logging_printf(logging_level_info, FMT, ##__VA_ARGS__)
 #define DEBUG(FMT,...) logging_printf(logging_level_debug, FMT, ##__VA_ARGS__)
 
-#endif
+#endif /* __LOGGING_H__ */

@@ -40,6 +40,7 @@ configure_file(iptracking-daemon.h.in iptracking-daemon.h)
 add_executable(iptracking-daemon
         logging.c
         log_queue.c
+        yaml-helpers.c
         iptracking-daemon.c)
 target_include_directories(iptracking-daemon
     PUBLIC

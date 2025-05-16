@@ -1,14 +1,15 @@
-
+/*
+ * iptracking
+ * log_queue.h
+ *
+ * Event-logging queue API.
+ *
+ */
 
 #ifndef __LOG_QUEUE_H__
 #define __LOG_QUEUE_H__
 
-
-#include <stdint.h>
-#include <stdbool.h>
-
-//
-
+#include "iptracking-daemon.h"
 #include "logging.h"
 
 //
@@ -81,4 +82,4 @@ void log_queue_summary(log_queue_ref *lq);
 bool log_queue_push(log_queue_ref *lq, log_data_t *data);
 bool log_queue_pop(log_queue_ref *lq, log_data_t *data);
 
-#endif
+#endif /* __LOG_QUEUE_H__ */
