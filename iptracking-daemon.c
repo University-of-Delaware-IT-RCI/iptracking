@@ -120,19 +120,71 @@ db_thread_entry(
 {
     thread_context_t    *CONTEXT = (thread_context_t*)context;
     
-    db_runloop(CONTEXT);
+    while ( true ) {
+        db_runloop(CONTEXT);
+    }
     return NULL;
 }
 
 //
 
 void*
-log_queue_thread_entry(
+event_thread_entry(
     void    *context
 )
 {
     thread_context_t    *CONTEXT = (thread_context_t*)context;
+    char                read_buffer[sizeof(log_data_t) + 4];
     
+    while ( true ) {
+        int             fifo_fd = open(pipe_filepath, O_RDONLY);
+        
+        if ( fifo_fd >= 0 ) {
+            char        *p = read_buffer, *p_end;
+            size_t      p_len = sizeof(read_buffer), p_read;
+            ssize_t     nbytes;
+            bool        success = true;
+            
+            /* Read all data: */
+            memset(read_buffer, 0, sizeof(read_buffer));
+            DEBUG("Event reader: reading event from open pipe");
+            while ( success && p_len && ((nbytes = read(fifo_fd, p, p_len)) != 0) ) {
+                if ( nbytes < 0 ) {
+                    if ( errno == EAGAIN ) continue;
+                    success = false;
+                } else {
+                    p += nbytes;
+                    p_len -= nbytes;
+                }
+            }
+            p_read = (sizeof(read_buffer) - p_len);
+            DEBUG("Event reader: read event of size %lld bytes", (long long)p_read);
+            if ( success && p_len ) {
+                log_data_t  data;
+                
+                /* Remove leading and trailing whitespace: */
+                p = read_buffer;
+                p_end = read_buffer + p_read - 1;
+                while ( (p < p_end) && *p && isspace(*p) ) p++;
+                while ( (p < p_end) && *p_end && isspace(*p_end)) p_end--;
+                if ( p < p_end ) {
+                    if ( log_data_parse(&data, read_buffer, (p_end - p) + 1) ) {
+                        log_queue_push(&CONTEXT->lq, &data);
+                    } else {
+                        WARN("Event reader: invalid event string: %s", read_buffer);
+                    }
+                } else {
+                    WARN("Event reader: empty event");
+                }
+            } else {
+                WARN((p_len ? "Event reader: read failure" : "Event reader: event overflow"));
+            }
+            close(fifo_fd);
+        } else {
+            ERROR("Event reader: unable to open named pipe %s (errno=%d)", pipe_filepath, errno);
+            sleep(5);
+        }
+    }
     return NULL;
 }
 
@@ -398,7 +450,7 @@ main(
     char* const*    argv
 )
 {
-    pthread_t           db_thread, log_thread;
+    pthread_t           db_thread, event_thread;
     thread_context_t    tc;
     int                 opt_ch, verbose = 0, quiet = 0;
     const char          *config_filepath = configuration_filepath_default;
@@ -453,42 +505,12 @@ main(
     /* Spawn the database consumer thread: */
     pthread_create(&db_thread, NULL, db_thread_entry, (void*)&tc);
     
-    if ( tc.lq  ) {
-        log_data_t      data;
-        
-        log_data_parse_cstr(&data, "128.175.4.164,86.86.60.34,43567,1,frey,2025-05-15 14:11:00");
-        log_queue_push(&tc.lq, &data);
-        
-        data.src_port = 33427;
-        strncpy(&data.log_date[0], "2025-05-15 14:12:33-0400", sizeof(data.log_date));
-        log_queue_push(&tc.lq, &data);
-        
-        strncpy(&data.src_ipaddr[0], "128.175.132.65", sizeof(data.src_ipaddr));
-        data.src_port = 24006;
-        strncpy(&data.uid[0], "hpcguest1546", sizeof(data.uid));
-        strncpy(&data.log_date[0], "2025-05-15 14:14:04-0400", sizeof(data.log_date));
-        log_queue_push(&tc.lq, &data);
-        
-        data.src_port = 24031;
-        strncpy(&data.log_date[0], "2025-05-15 14:15:55-0400", sizeof(data.log_date));
-        log_queue_push(&tc.lq, &data);
-        
-        sleep(2);
-        data.src_port++;
-        log_queue_push(&tc.lq, &data);
-        
-        sleep(2);
-        data.src_port++;
-        log_queue_push(&tc.lq, &data);
-        
-        sleep(2);
-        data.src_port++;
-        log_queue_push(&tc.lq, &data);
-        
-        sleep(300);
-    }
+    /* Spawn the event consumer thread: */
+    pthread_create(&event_thread, NULL, event_thread_entry, (void*)&tc);
     
-    //db_runloop();
+    /* Wait for termination: */
+    pthread_join(db_thread, NULL);
+    pthread_join(event_thread, NULL);
     
     return 0;
 }
