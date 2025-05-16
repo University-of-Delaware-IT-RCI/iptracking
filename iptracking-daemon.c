@@ -111,8 +111,9 @@ db_runloop(
         
         /* The log_queue_pop() function will block until a record becomes available: */
         if ( log_queue_pop(&context->lq, &data) ) {
-            INFO("Received data: { %s, %s, %s, %hu, %s }",
+            INFO("Received data: { %s, %s, %s, %s, %hu, %s }",
                 data.log_date,
+                log_event_str(data.event),
                 data.uid,
                 data.src_ipaddr,
                 data.src_port,
@@ -545,6 +546,7 @@ main(
     const char          *config_filepath = configuration_filepath_default;
     log_queue_params_t  lq_params;
     
+    /* Parse all CLI arguments: */
     while ( (opt_ch = getopt_long(argc, argv, cli_options_str, cli_options, NULL)) != -1 ) {
         switch ( opt_ch ) {
             case 'h':
@@ -567,12 +569,17 @@ main(
                 break;
         }
     }
+    
+    /* Set logging level based on verbose/quiet options: */
     logging_set_level(logging_get_level() + verbose - quiet);
     
+    /* Load configuration: */
     if ( ! config_read_yaml_file(config_filepath) ) exit(EINVAL);
     
+    /* Validate configuration: */
     if ( ! config_validate() ) exit(EINVAL);
     
+    /* Initialize the log queue parameters: */
     lq_params.records.min = log_pool_records_min;
     lq_params.records.max = log_pool_records_max;
     lq_params.records.delta = log_pool_records_delta;
@@ -582,8 +589,10 @@ main(
     lq_params.push_wait_seconds.delta = log_pool_push_wait_seconds_dt;
     lq_params.push_wait_seconds.grow_threshold = log_pool_push_wait_seconds_dt_thresh;
     
+    /* Create the log queue: */
     tc.lq = log_queue_create(&lq_params);
     
+    /* Spawn the database consumer thread: */
     pthread_create(&db_thread, NULL, db_thread_entry, (void*)&tc);
     
     if ( tc.lq  ) {

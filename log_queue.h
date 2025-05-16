@@ -25,12 +25,19 @@ typedef struct {
 
 //
 
-enum log_event {
+typedef enum log_event {
     log_event_unknown = 0,
     log_event_auth,
     log_event_session_start,
-    log_event_session_end
-};
+    log_event_session_end,
+    log_event_max
+} log_event_t;
+
+//
+
+const char* log_event_str(log_event_t event);
+
+//
 
 #if defined __GCC__ || defined __clang__
 typedef struct __attribute__((packed)) log_data {
