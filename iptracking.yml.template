@@ -1,8 +1,8 @@
 database:
-    host: r02mgmt02
-    port: 45432
+    host: hostname
+    port: 5432
     user: iptracking
-    password: 57-determine-BULGARIA-UNEMPLOYMENT-everyone-children-38
+    password: some-secret-words-and-545644
     dbname: iptracking
 pipe-file: iptracking.fifo
 log-pool:
