@@ -29,14 +29,40 @@ typedef struct {
 typedef enum log_event {
     log_event_unknown = 0,
     log_event_auth,
-    log_event_session_start,
-    log_event_session_end,
+    log_event_open_session,
+    log_event_close_session,
     log_event_max
 } log_event_t;
 
 //
 
-const char* log_event_str(log_event_t event);
+static inline
+const char* log_event_to_str(
+    log_event_t     event
+)
+{
+    switch ( event ) {
+        case log_event_unknown: return "unknown";
+        case log_event_auth: return "auth";
+        case log_event_open_session: return "open_session";
+        case log_event_close_session: return "close_session";
+        default: return NULL;
+    }
+    return NULL;
+}
+
+//
+
+static inline
+log_event_t log_event_parse_str(
+    const char  *event_str
+)
+{
+    if ( strcmp(event_str, "auth") == 0 ) return log_event_auth;
+    if ( strcmp(event_str, "open_session") == 0 ) return log_event_open_session;
+    if ( strcmp(event_str, "close_session") == 0 ) return log_event_close_session;
+    return log_event_unknown;
+}
 
 //
 

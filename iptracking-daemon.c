@@ -30,8 +30,8 @@ static int log_pool_push_wait_seconds_dt = LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT
 
 //
 
-static bool should_create_pipe = false;
-static const char *pipe_filepath = PIPE_FILEPATH_DEFAULT;
+static bool should_create_fifo = false;
+static const char *fifo_filepath = FIFO_FILEPATH_DEFAULT;
 
 //
 
@@ -70,19 +70,48 @@ static const char* db_conn_values[] = {
     
 //
 
+#define DB_LOG_STMT_NAME_STR "log_one_event"
+#define DB_LOG_STMT_NPARAMS 6
+#define DB_LOG_STMT_QUERY_STR "SELECT log_one_event($1, $2, $3, $4, $5, $6);"
+
+//
+
 int
 db_runloop(
     thread_context_t    *context
 )
 {
-    PGconn  *db_conn = NULL;
+    static const char   *db_log_stmt_name = DB_LOG_STMT_NAME_STR;
+    static const char   *db_log_stmt_query = DB_LOG_STMT_QUERY_STR;
+    static const int    db_log_stmt_nparams = DB_LOG_STMT_NPARAMS;
+    PGconn              *db_conn = NULL;
+    PGresult            *db_result;
+    ExecStatusType      db_rc;
+    bool                is_connecting = true;
     
-    while ( true ) {
+    while ( is_connecting ) {
         INFO("Database: attempting connection...");
         db_conn = PQconnectdbParams(db_conn_keywords, db_conn_values, 0);
         if ( db_conn ) {
             if ( PQstatus(db_conn) == CONNECTION_OK ) {
                 INFO("Database: connection okay");
+                
+                /* Prepare the logging query: */
+                db_result = PQprepare(db_conn, db_log_stmt_name, db_log_stmt_query,
+                                    db_log_stmt_nparams, NULL);
+                db_rc = PQresultStatus(db_result);
+                PQclear(db_result);
+                switch ( db_rc ) {
+                    case PGRES_COMMAND_OK:
+                        /* Log the success and exit the loop: */
+                        INFO("Database: logging query prepared");
+                        is_connecting = false;
+                        continue;
+                    default:
+                        ERROR("Database: failed to prepare logging query (%d): %s",
+                                db_rc, PQerrorMessage(db_conn));
+                        break;
+                }
                 break;
             }
             INFO("Database: connection failure: %s", PQerrorMessage(db_conn));
@@ -98,13 +127,44 @@ db_runloop(
         
         /* The log_queue_pop() function will block until a record becomes available: */
         if ( log_queue_pop(&context->lq, &data) ) {
-            INFO("Received data: { %s, %s, %s, %s, %hu, %s }",
+            const char*     param_values[DB_LOG_STMT_NPARAMS];
+            char            src_port_str[32];
+            
+            snprintf(src_port_str, sizeof(src_port_str), "%hu", data.src_port);
+            
+            DEBUG("Database: received data { %s, %s, %s, %s, %hu, %s }",
                 data.log_date,
-                log_event_str(data.event),
+                log_event_to_str(data.event),
                 data.uid,
                 data.src_ipaddr,
                 data.src_port,
                 data.dst_ipaddr);
+            
+            param_values[0] = data.dst_ipaddr;
+            param_values[1] = data.src_ipaddr;
+            param_values[2] = src_port_str;
+            param_values[3] = log_event_to_str(data.event);
+            param_values[4] = data.uid;
+            param_values[5] = data.log_date;
+            db_result = PQexecPrepared(db_conn, db_log_stmt_name, db_log_stmt_nparams,
+                                param_values, NULL, NULL, 0);
+            db_rc = PQresultStatus(db_result);
+            PQclear(db_result);
+            switch ( db_rc ) {
+                case PGRES_COMMAND_OK:
+                case PGRES_TUPLES_OK:
+                    DEBUG("Database: data logged");
+                    break;
+                default:
+                    ERROR("Database: unable to log data{ %s, %s, %s, %s, %hu, %s }",
+                        data.log_date,
+                        log_event_to_str(data.event),
+                        data.uid,
+                        data.src_ipaddr,
+                        data.src_port,
+                        data.dst_ipaddr);
+                    break;
+            }
         }
     }
     PQfinish(db_conn);
@@ -137,7 +197,7 @@ event_thread_entry(
     char                read_buffer[sizeof(log_data_t) + 4];
     
     while ( true ) {
-        int             fifo_fd = open(pipe_filepath, O_RDONLY);
+        int             fifo_fd = open(fifo_filepath, O_RDONLY);
         
         if ( fifo_fd >= 0 ) {
             char        *p = read_buffer, *p_end;
@@ -147,7 +207,7 @@ event_thread_entry(
             
             /* Read all data: */
             memset(read_buffer, 0, sizeof(read_buffer));
-            DEBUG("Event reader: reading event from open pipe");
+            DEBUG("Event reader: reading event from named pipe");
             while ( success && p_len && ((nbytes = read(fifo_fd, p, p_len)) != 0) ) {
                 if ( nbytes < 0 ) {
                     if ( errno == EAGAIN ) continue;
@@ -181,7 +241,7 @@ event_thread_entry(
             }
             close(fifo_fd);
         } else {
-            ERROR("Event reader: unable to open named pipe %s (errno=%d)", pipe_filepath, errno);
+            ERROR("Event reader: unable to open named pipe %s (errno=%d)", fifo_filepath, errno);
             sleep(5);
         }
     }
@@ -236,17 +296,17 @@ config_read_yaml_file(
                             }
                         }
                         /*
-                         * Check for the pipe file path:
+                         * Check for the fifo file path:
                          */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "pipe-file")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "fifo-file")) ) {
                             const char  *s = yaml_helper_get_scalar_value(node);
                             
                             if ( ! s ) {
-                                ERROR("Configuration: invalid pipe-file value");
+                                ERROR("Configuration: invalid fifo-file value");
                                 rc = false;
                                 break;
                             }
-                            pipe_filepath = s;
+                            fifo_filepath = s;
                         }
                         /*
                          * Check for any log-pool config items:
@@ -364,29 +424,29 @@ config_validate()
         return false;
     }
     
-    /* Check access and file type for the pipe: */
-    if ( stat(pipe_filepath, &finfo) != 0 ) {
-        if ( ! should_create_pipe ) {
-            ERROR("Configuration: unable to stat() named pipe %s", pipe_filepath);
+    /* Check access and file type for the fifo: */
+    if ( stat(fifo_filepath, &finfo) != 0 ) {
+        if ( ! should_create_fifo ) {
+            ERROR("Configuration: unable to stat() named pipe %s", fifo_filepath);
             return false;
         }
-        if ( mkfifo(pipe_filepath, 0600) != 0 ) {
-            ERROR("Configuration: unable to create named pipe %s: errno=%d", pipe_filepath, errno);
+        if ( mkfifo(fifo_filepath, 0600) != 0 ) {
+            ERROR("Configuration: unable to create named pipe %s: errno=%d", fifo_filepath, errno);
             return false;
         }
-        WARN("Configuration: created named pipe %s", pipe_filepath);
+        WARN("Configuration: created named pipe %s", fifo_filepath);
     } else {
         if ( (finfo.st_mode & S_IFMT) != S_IFIFO ) {
-            ERROR("Configuration: %s is not a named pipe", pipe_filepath);
+            ERROR("Configuration: %s is not a named pipe", fifo_filepath);
             return false;
         }
-        if ( access(pipe_filepath, R_OK) != 0 ) {
-            ERROR("Configuration: no read access to named pipe %s", pipe_filepath);
+        if ( access(fifo_filepath, R_OK) != 0 ) {
+            ERROR("Configuration: no read access to named pipe %s", fifo_filepath);
             return false;
         }
     }
     
-    INFO("                                  pipe-file = %s", pipe_filepath);
+    INFO("                                  fifo-file = %s", fifo_filepath);
     
     INFO("                       log-pool.records.min = %lu", log_pool_records_min);
     INFO("                       log-pool.records.max = %lu", log_pool_records_max);
@@ -438,7 +498,7 @@ usage(
         "(v" IPTRACKING_VERSION_STR " built with " CC_VENDOR " %lu on " __DATE__ " " __TIME__ ")\n",
         exe,
         configuration_filepath_default,
-        pipe_filepath,
+        fifo_filepath,
         (unsigned long)CC_VERSION);
 }
 
@@ -475,7 +535,7 @@ main(
                 config_filepath = optarg;
                 break;
             case 'm':
-                should_create_pipe = true;
+                should_create_fifo = true;
                 break;
         }
     }

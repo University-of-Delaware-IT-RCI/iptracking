@@ -10,24 +10,6 @@
 
 //
 
-static const char* log_event_strs[] = {
-        "unknown",
-        "auth",
-        "session_start",
-        "session_end",
-        NULL
-    };
-
-const char*
-log_event_str(
-    log_event_t event
-)
-{
-    return ((event >= 0) && (event < log_event_max)) ? log_event_strs[event] : NULL;
-}
-
-//
-
 bool
 log_data_parse(
     log_data_t  *data,

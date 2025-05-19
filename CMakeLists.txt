@@ -13,6 +13,8 @@ include(GNUInstallDirs)
 
 set(CONFIGURATION_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_SYSCONFDIR}/iptracking.yml" CACHE PATH "Default configuration file path")
 
+option(SHOULD_INSTALL_CONFIG_TEMPLATE Off "Install a template configuration file")
+
 set(LOG_POOL_RECORDS_MIN "32" CACHE STRING "Minimum number of logging records available to queue")
 set(LOG_POOL_RECORDS_MAX "0" CACHE STRING "Maximum number of logging records available to queue")
 set(LOG_POOL_RECORDS_DELTA "32" CACHE STRING "Number of logging records in each queue capacity expansion")
@@ -22,7 +24,7 @@ set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_MAX "600" CACHE STRING "Maximum seconds w
 set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT_THRESH "4" CACHE STRING "Number of failed allocs before increasing wait time")
 set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT "5" CACHE STRING "Seconds to increase wait time after threshold")
 
-set(PIPE_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_RUNSTATEDIR}/iptracking.fifo" CACHE PATH "Default named pipe path")
+set(FIFO_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_RUNSTATEDIR}/iptracking.fifo" CACHE PATH "Default named pipe path")
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
@@ -36,6 +38,7 @@ if (PostgreSQL_VERSION_STRING VERSION_LESS "15")
 endif ()
 
 configure_file(iptracking-daemon.h.in iptracking-daemon.h)
+configure_file(iptracking.yml.in iptracking.yml)
 
 add_executable(iptracking-daemon
         logging.c
@@ -53,3 +56,30 @@ target_link_libraries(iptracking-daemon
         Threads::Threads
         PostgreSQL::PostgreSQL
         "${LIBYAML_LIBRARY}")
+if (${SHOULD_INSTALL_CONFIG_TEMPLATE} AND NOT EXISTS "${CONFIGURATION_FILEPATH_DEFAULT}")
+    cmake_path(GET CONFIGURATION_FILEPATH_DEFAULT PARENT_PATH CONFIGURATION_FILEPATH)
+    cmake_path(GET CONFIGURATION_FILEPATH_DEFAULT FILENAME CONFIGURATION_FILENAME)
+    install(FILES iptracking.yml
+            DESTINATION "${CONFIGURATION_FILEPATH}"
+            RENAME "${CONFIGURATION_FILENAME}"
+            PERMISSIONS OWNER_READ OWNER_WRITE
+                        GROUP_READ GROUP_WRITE)
+endif ()
+install(TARGETS iptracking-daemon
+        RUNTIME
+            DESTINATION ${CMAKE_INSTALL_SBINDIR}
+            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                        GROUP_READ             GROUP_EXECUTE)
+
+
+
+add_executable(iptracking-pam-callback
+        iptracking-pam-callback.c)
+target_include_directories(iptracking-pam-callback
+    PUBLIC
+        "${PROJECT_BINARY_DIR}")
+install(TARGETS iptracking-pam-callback
+        RUNTIME
+            DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}
+            PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                        GROUP_READ             GROUP_EXECUTE)

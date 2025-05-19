@@ -4,7 +4,7 @@ database:
     user: iptracking
     password: some-secret-words-and-545644
     dbname: iptracking
-pipe-file: iptracking.fifo
+fifo-file: @FIFO_FILEPATH_DEFAULT@
 log-pool:
     records:
         delta: 32
