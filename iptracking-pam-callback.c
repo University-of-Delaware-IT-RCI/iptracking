@@ -9,14 +9,21 @@
 #include "iptracking-daemon.h"
 #include "log_queue.h"
 
+#include <signal.h>
+
+//
+
+#define FIFO_TIMEOUT_DEFAULT   5   /* seconds */
+
 //
 
 static struct option cli_options[] = {
                    { "help",    no_argument,       0,  'h' },
                    { "fifo",    required_argument, 0,  'p' },
+                   { "timeout", required_argument, 0,  't' },
                    { NULL,      0,                 0,   0  }
                };
-static const char *cli_options_str = "hp:";
+static const char *cli_options_str = "hp:t:";
 
 //
 
@@ -32,11 +39,24 @@ usage(
         "    -h/--help                  Show this information\n"
         "    -p/--fifo <path>           Path to the fifo the daemon is monitoring\n"
         "                               (default %s)\n"
+        "    -t/--timeout <int>         Timeout in seconds for open and write to the named pipe\n"
+        "                               (default %d)\n"
         "\n"
         "(v" IPTRACKING_VERSION_STR " built with " CC_VENDOR " %lu on " __DATE__ " " __TIME__ ")\n",
         exe,
         FIFO_FILEPATH_DEFAULT,
+        FIFO_TIMEOUT_DEFAULT,
         (unsigned long)CC_VERSION);
+}
+
+//
+
+void
+fifo_timeout_handler(
+    int     signum
+)
+{
+    exit(ETIME);
 }
 
 //
@@ -51,6 +71,7 @@ main(
     size_t              bytes_ready;
     
     const char          *fifo_filepath = FIFO_FILEPATH_DEFAULT;
+    int                 fifo_timeout = FIFO_TIMEOUT_DEFAULT;
     
     const char          *pam_type = getenv("PAM_TYPE");
     log_event_t         event;
@@ -77,6 +98,20 @@ main(
             case 'p':
                 fifo_filepath = optarg;
                 break;
+            case 't': {
+                char    *endptr;
+                long    i = strtol(optarg, &endptr, 0);
+                
+                if ( endptr > optarg ) {
+                    if ( i < 0 ) i = 0;
+                    else if ( i > INT_MAX ) i = INT_MAX;
+                    fifo_timeout = i;
+                } else {
+                    fprintf(stderr, "ERROR: invalid timeout: %s\n", optarg);
+                    exit(EINVAL);
+                }
+                break;
+            }
         }
     }
     
@@ -140,6 +175,11 @@ main(
     out_buffer_p += rc;
     rc = 0;
     
+    /* Set the timeout alarm: */
+    alarm(0);
+    signal(SIGALRM, fifo_timeout_handler);
+    alarm(fifo_timeout);
+    
     /* Open the fifo for writing: */
     fifo_fd = open(fifo_filepath, O_WRONLY);
     if ( fifo_fd < 0 ) exit(errno);
@@ -157,6 +197,7 @@ main(
         }
     }
     close(fifo_fd);
+    alarm(0);
     
     return 0;
 }
