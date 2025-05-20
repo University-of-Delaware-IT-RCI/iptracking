@@ -1,8 +1,113 @@
 # iptracking
 
-Infrastructure for tracking PAM sshd events
+PAM and SSH services on a Linux system typically log authentication and session events through syslog to a file under `/var/log` that gets periodically rotated.  These logs can be shipped periodically for ingest and analysis or syslog can be configured to direct events to external hosts as they occur.
 
+In the former scheme there is a significant delay between the occurrence of events and their availability for analysis.  In the latter, access to the data for the sake of analysis may not be as flexible or even permissible.  Near real-time reaction to events is best implemented on the system itself, and the fastest path to extracting meaning from the events is to place them in a queryable database as they occur.
 
+This project uses the PAM `pg_exec.so` service to execute an external program with user authorization information.  That program writes the data to a named pipe which is monitored by a daemon that logs the event to a PostgreSQL database.
+
+## Database schema
+
+The `iptracking` system makes use of a PostgreSQL database.  The [schema in this repository](psql-db.schema) is written to be the sole occupant of a database but could be modifed to introduce a namespace for all entities (and the daemon can be built with a default schema name and has the ability to set the schema name at runtime via a CLI flag).
+
+The `inet_log` table contains all event tuples.  Columns present are:
+
+| Column | Type | Description |
+| ------ | ---- | ----------- |
+| `dst_ipaddr` | `INET` | IP address of the sshd server that logged this event |
+| `src_ipaddr` | `INET` | IP address of the remote client attempting to connect |
+| `src_port` | `INTEGER` | TCP/IP port from which the remote client connected |
+| `log_event` | `log_event_t` | Enumeration of `auth`, `open_session`, `close_session` |
+| `uid` | `TEXT` | User identifier attempting to connect |
+| `log_date` | `TIMESTAMP` | The date and time the event was logged |
+
+Injection of data is abstracted into a server-side function, `log_one_event()`, so that the table could be restructured without altering the daemon's mechanism (not including addition of more columns provided by the daemon).
+
+Some views are present that summarize the `inet_log` table data in different manners:
+
+| View | Description |
+| ==== | =========== |
+| `ips` | Collapses data for combinations of `dst_` and `src_ipaddr` to an event count and time range |
+| `nets_24` | Similar to `ips` but replaces the `src_ipaddr` with the IPv4 /24 subnet associated with each address |
+| `nets_16` | Similar to `ips` but replaces the `src_ipaddr` with the IPv4 /16 subnet associated with each address |
+| `nets_8` | Similar to `ips` but replaces the `src_ipaddr` with the IPv4 /8 subnet associated with each address |
+| `agg_ips` | Similar to `ips` but aggregates across all `dst_ipaddr` values |
+| `agg_nets_24` | Similar to `nets_24` but aggregates across all `dst_ipaddr` values |
+| `agg_nets_16` | Similar to `nets_16` but aggregates across all `dst_ipaddr` values |
+| `agg_nets_8` | Similar to `nets_8` but aggregates across all `dst_ipaddr` values |
+
+Two tuple-yielding functions are present that mimic the `nets_*` and `agg_nets_*` views but for an arbitrary IPv4 network prefix:
+
+| Function | Description |
+| ======== | =========== |
+| `nets_view(<INTEGER>)` | Yields tuples similar to `ips` but replaces the `src_ipaddr` with the IPv4 subnet (prefix length as the sole argument to the function) associated with each address |
+| `agg_nets_view(<INTEGER>)` | Yields tuples similar to `agg_ips` but replaces the `src_ipaddr` with the IPv4 subnet (prefix length as the sole argument to the function) associated with each address |
+
+### Useful queries
+
+The simplest query of any usefulness is the event count and time range:
+
+```
+iptracking=# select count(*), min(log_date) as start_date, max(log_date) as end_date from inet_log;
+ count |       start_date       |        end_date        
+-------+------------------------+------------------------
+ 19651 | 2025-05-19 18:10:55-04 | 2025-05-20 13:03:42-04
+(1 row)
+```
+
+Another useful query is a total event count per unique IP address and the time range of attempts from those IPs:
+
+```
+iptracking=# select * from agg_ips order by log_count desc;
+     ipaddr      | log_count |       start_date       |        end_date        
+-----------------+-----------+------------------------+------------------------
+ 118.70.81.125   |      6703 | 2025-05-19 20:16:25-04 | 2025-05-20 13:07:04-04
+ 218.145.31.213  |      5803 | 2025-05-19 20:16:22-04 | 2025-05-20 13:07:02-04
+ 36.155.130.6    |       945 | 2025-05-19 18:10:58-04 | 2025-05-19 20:38:01-04
+ 115.190.12.175  |       437 | 2025-05-20 12:07:32-04 | 2025-05-20 12:41:00-04
+ 196.251.88.103  |       429 | 2025-05-19 22:19:01-04 | 2025-05-20 08:45:33-04
+ 10.65.0.2       |       404 | 2025-05-19 20:20:05-04 | 2025-05-20 13:00:10-04
+ 80.94.95.112    |       325 | 2025-05-19 18:37:56-04 | 2025-05-20 13:00:13-04
+ 134.199.160.158 |       234 | 2025-05-20 06:48:49-04 | 2025-05-20 07:06:37-04
+ 209.38.83.177   |       234 | 2025-05-20 03:06:42-04 | 2025-05-20 03:25:19-04
+ 134.199.166.27  |       234 | 2025-05-20 08:10:25-04 | 2025-05-20 08:28:22-04
+ 37.238.10.118   |       218 | 2025-05-19 18:11:21-04 | 2025-05-19 23:04:48-04
+ 45.135.232.92   |       194 | 2025-05-19 18:11:39-04 | 2025-05-20 12:55:02-04
+    :
+```
+
+The top two tuples in that list are of some concern, so what user identifiers are being tried from those addresses?
+
+```
+iptracking=# select * from agg_ips order by log_count desc limit 6; select count(*), uid from inet_log where src_ipaddr in ('118.70.81.125', '218.145.31.213') group by uid order by count desc;
+     ipaddr      | log_count |       start_date       |        end_date        
+-----------------+-----------+------------------------+------------------------
+ 118.70.81.125   |      6743 | 2025-05-19 20:16:25-04 | 2025-05-20 13:12:37-04
+ 218.145.31.213  |      5838 | 2025-05-19 20:16:22-04 | 2025-05-20 13:12:42-04
+ 36.155.130.6    |       945 | 2025-05-19 18:10:58-04 | 2025-05-19 20:38:01-04
+ 115.190.12.175  |       437 | 2025-05-20 12:07:32-04 | 2025-05-20 12:41:00-04
+ 196.251.88.103  |       429 | 2025-05-19 22:19:01-04 | 2025-05-20 08:45:33-04
+ 10.65.0.2       |       408 | 2025-05-19 20:20:05-04 | 2025-05-20 13:10:08-04
+(10 rows)
+
+ count |   uid    
+-------+----------
+  6528 | breakdown
+  4479 | apache
+  1359 | adm
+   215 | shutdown
+(4 rows)
+```
+
+On average, how fast are events being generated for the `breakdown` uid?
+
+```
+iptracking=select avg(delta_t) from (select log_date - lag(log_date) over () as delta_t from inet_log where uid = 'breakdown');
+       avg       
+-----------------
+ 00:00:08.911319
+(1 row)
+```
 
 ## Build and install
 

@@ -26,6 +26,8 @@ set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_MAX "600" CACHE STRING "Maximum seconds w
 set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT_THRESH "4" CACHE STRING "Number of failed allocs before increasing wait time")
 set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT "5" CACHE STRING "Seconds to increase wait time after threshold")
 
+set(DB_SCHEMA_DEFAULT "" CACHE STRING "Default database schema name for the iptracking tables/views/functions")
+
 set(FIFO_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_RUNSTATEDIR}/iptracking.fifo" CACHE PATH "Default named pipe path")
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)

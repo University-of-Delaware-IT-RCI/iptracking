@@ -35,6 +35,10 @@ static const char *fifo_filepath = FIFO_FILEPATH_DEFAULT;
 
 //
 
+static const char *db_schema = DB_SCHEMA_DEFAULT;
+
+//
+
 typedef struct {
     log_queue_ref   lq;
 } thread_context_t;
@@ -72,7 +76,7 @@ static const char* db_conn_values[] = {
 
 #define DB_LOG_STMT_NAME_STR "log_one_event"
 #define DB_LOG_STMT_NPARAMS 6
-#define DB_LOG_STMT_QUERY_STR "SELECT log_one_event($1, $2, $3, $4, $5, $6);"
+#define DB_LOG_STMT_QUERY_FORMAT "SELECT %s%slog_one_event($1, $2, $3, $4, $5, $6);"
 
 //
 
@@ -82,7 +86,7 @@ db_runloop(
 )
 {
     static const char   *db_log_stmt_name = DB_LOG_STMT_NAME_STR;
-    static const char   *db_log_stmt_query = DB_LOG_STMT_QUERY_STR;
+    static const char   *db_log_stmt_query_format = DB_LOG_STMT_QUERY_FORMAT;
     static const int    db_log_stmt_nparams = DB_LOG_STMT_NPARAMS;
     PGconn              *db_conn = NULL;
     PGresult            *db_result;
@@ -94,23 +98,35 @@ db_runloop(
         db_conn = PQconnectdbParams(db_conn_keywords, db_conn_values, 0);
         if ( db_conn ) {
             if ( PQstatus(db_conn) == CONNECTION_OK ) {
-                INFO("Database: connection okay");
+                const char  *db_log_stmt_query = NULL;
+                int         db_log_stmt_query_len;
                 
-                /* Prepare the logging query: */
-                db_result = PQprepare(db_conn, db_log_stmt_name, db_log_stmt_query,
-                                    db_log_stmt_nparams, NULL);
-                db_rc = PQresultStatus(db_result);
-                PQclear(db_result);
-                switch ( db_rc ) {
-                    case PGRES_COMMAND_OK:
-                        /* Log the success and exit the loop: */
-                        INFO("Database: logging query prepared");
-                        is_connecting = false;
-                        continue;
-                    default:
-                        ERROR("Database: failed to prepare logging query (%d): %s",
-                                db_rc, PQerrorMessage(db_conn));
-                        break;
+                INFO("Database: connection okay, preparing query");
+                
+                /* Prepare the query with the schema et al.: */
+                db_log_stmt_query_len = asprintf(&db_log_stmt_query, db_log_stmt_query_format,
+                                                    (db_schema && *db_schema) ? db_schema : "",
+                                                    (db_schema && *db_schema) ? "." : "");
+                if ( db_log_stmt_query_len && db_log_stmt_query ) {
+                    /* Send the query to the server for preparation: */
+                    db_result = PQprepare(db_conn, db_log_stmt_name, db_log_stmt_query,
+                                        db_log_stmt_nparams, NULL);
+                    db_rc = PQresultStatus(db_result);
+                    PQclear(db_result);
+                    free((void*)db_log_stmt_query);
+                    switch ( db_rc ) {
+                        case PGRES_COMMAND_OK:
+                            /* Log the success and exit the loop: */
+                            INFO("Database: logging query prepared");
+                            is_connecting = false;
+                            continue;
+                        default:
+                            ERROR("Database: failed to prepare logging query (%d): %s",
+                                    db_rc, PQerrorMessage(db_conn));
+                            break;
+                    }
+                } else {
+                    ERROR("Database: failed to generate prepared query statement");
                 }
                 break;
             }
@@ -468,10 +484,11 @@ static struct option cli_options[] = {
                    { "verbose", no_argument,       0,  'v' },
                    { "quiet",   no_argument,       0,  'q' },
                    { "config",  required_argument, 0,  'c' },
+                   { "schema",  required_argument, 0,  's' },
                    { "mkfifo",  no_argument,       0,  'm' },
                    { NULL,      0,                 0,   0  }
                };
-static const char *cli_options_str = "hVvqc:m";
+static const char *cli_options_str = "hVvqc:s:m";
 
 //
 
@@ -490,6 +507,8 @@ usage(
         "    -q/--quiet                 Decrease level of printing\n"
         "    -c/--config <filepath>     Read configuration directives from the YAML file\n"
         "                               at <filepath> (default: %s)\n"
+        "    -s/--schema <name>         Database schema to prefix tables/views/etc.\n"
+        "                               (default: %s)\n"
         "    -m/--mkfifo                Create the named pipe if it does not exist\n"
         "\n"
         "  notes:\n\n"
@@ -498,6 +517,7 @@ usage(
         "(v" IPTRACKING_VERSION_STR " built with " CC_VENDOR " %lu on " __DATE__ " " __TIME__ ")\n",
         exe,
         configuration_filepath_default,
+        ( (db_schema && *db_schema) ? db_schema : "<no-schema>" ),
         fifo_filepath,
         (unsigned long)CC_VERSION);
 }
@@ -534,6 +554,11 @@ main(
             case 'c':
                 config_filepath = optarg;
                 break;
+            case 's': {
+                db_schema = optarg;
+                while ( *db_schema && isspace(db_schema) ) db_schema++;
+                break;
+            }
             case 'm':
                 should_create_fifo = true;
                 break;
