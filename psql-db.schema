@@ -117,7 +117,16 @@ AS $$
     GROUP BY ipnet;
 $$ LANGUAGE SQL;
 
-
+--
+-- Rather than have the daemon do INSERTs into the table, data
+-- injection is via this function.  If the internal structure of the
+-- table were to change, altering the INSERT query, this function
+-- can be altered without having to rebuild the daemon.
+--
+-- Likewise, if we need to do some filtering of incoming data, this
+-- function could be modified to pre-flight the data and do the INSERT
+-- only when necessary (again, without any change to the daemon).
+--
 CREATE OR REPLACE FUNCTION log_one_event(
     in_dst_ipaddr   TEXT,
     in_src_ipaddr   TEXT,

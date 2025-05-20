@@ -15,68 +15,69 @@ yaml_node_t*
 yaml_helper_doc_node_at_path(
     yaml_document_t *config_doc,
     yaml_node_t     *node,
-    int             level,
     const char      *path
 )
 {
-    /* Do we actually have a node? */
-    if ( ! node ) return NULL;
+    int             level = 0;
     
-    /* Return this node? */
-    if ( ! *path ) return node;
-    
-    switch ( node->type ) {
-        case YAML_NO_NODE:
-            return NULL;
-            
-        case YAML_SCALAR_NODE:
-            if ( ! *path ) return node;
-            break;
+    while ( node ) {
+        /* Return this node? */
+        if ( ! *path ) return node;
         
-        case YAML_SEQUENCE_NODE: {
-            long                idx;
-            char                *endptr;
-            yaml_node_item_t    *item = node->data.sequence.items.start;
-            
-            if ( *path != '[' ) return NULL;
-            idx = strtol(++path, &endptr, 0);
-            if ( (idx < 0) || (endptr == path) ) return NULL;
-            if ( *path != ']' ) return NULL;
-            path++;
-            item += idx;
-            if ( item < node->data.sequence.items.top ) {
-                return yaml_helper_doc_node_at_path(config_doc, yaml_document_get_node(config_doc, *item), level + 1, path);
-            }
-            break;
-        }
-        
-        case YAML_MAPPING_NODE: {
-            yaml_node_pair_t    *ps, *pe;
-            const char          *endptr = path;
-            
-            if ( level > 0 ) {
-                if ( *path != '.' ) return NULL;
-                endptr = ++path;
-            }
-            while ( *endptr && (*endptr != '.') && (*endptr != '[') ) endptr++;
-            if ( endptr == path ) return NULL;
-            ps = node->data.mapping.pairs.start;
-            pe = node->data.mapping.pairs.top;
-            while ( ps < pe ) {
-                yaml_node_t     *k = yaml_document_get_node(config_doc, ps->key);
+        switch ( node->type ) {
+            case YAML_NO_NODE:
+                return NULL;
                 
-                if ( k && (k->type == YAML_SCALAR_NODE) ) {
-                    size_t      s_len = endptr - path;
-                    
-                    if ( (s_len == k->data.scalar.length) && (strncmp(path, (const char*)k->data.scalar.value, s_len) == 0) ) {
-                        return yaml_helper_doc_node_at_path(config_doc, yaml_document_get_node(config_doc, ps->value), level + 1, endptr);
-                    }
-                }
-                ps++;
+            case YAML_SCALAR_NODE:
+                if ( ! *path ) return node;
+                node = NULL;
+                break;
+            
+            case YAML_SEQUENCE_NODE: {
+                long                idx;
+                char                *endptr;
+                yaml_node_item_t    *item = node->data.sequence.items.start;
+                
+                if ( *path != '[' ) return NULL;
+                idx = strtol(++path, &endptr, 0);
+                if ( (idx < 0) || (endptr == path) ) return NULL;
+                if ( *path != ']' ) return NULL;
+                path++;
+                item += idx;
+                node = ( item < node->data.sequence.items.top ) ? yaml_document_get_node(config_doc, *item) : NULL;
+                break;
             }
-            break;
-        }
-    
+            
+            case YAML_MAPPING_NODE: {
+                yaml_node_pair_t    *ps, *pe;
+                const char          *endptr = path;
+                
+                if ( level > 0 ) {
+                    if ( *path != '.' ) return NULL;
+                    endptr = ++path;
+                }
+                level++;
+                while ( *endptr && (*endptr != '.') && (*endptr != '[') ) endptr++;
+                if ( endptr == path ) return NULL;
+                ps = node->data.mapping.pairs.start;
+                pe = node->data.mapping.pairs.top;
+                while ( ps < pe ) {
+                    yaml_node_t     *k = yaml_document_get_node(config_doc, ps->key);
+                    
+                    if ( k && (k->type == YAML_SCALAR_NODE) ) {
+                        size_t      s_len = endptr - path;
+                        if ( (s_len == k->data.scalar.length) && (strncmp(path, (const char*)k->data.scalar.value, s_len) == 0) ) {
+                            node = yaml_document_get_node(config_doc, ps->value);
+                            path = endptr;
+                            break;
+                        }
+                    }
+                    ps++;
+                }
+                if ( ps >= pe ) node = NULL;
+                break;
+            }
+        }    
     }
     return NULL;
 }

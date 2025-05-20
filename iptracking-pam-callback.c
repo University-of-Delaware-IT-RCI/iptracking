@@ -19,11 +19,12 @@
 
 static struct option cli_options[] = {
                    { "help",    no_argument,       0,  'h' },
+                   { "version", no_argument,       0,  'V' },
                    { "fifo",    required_argument, 0,  'p' },
                    { "timeout", required_argument, 0,  't' },
                    { NULL,      0,                 0,   0  }
                };
-static const char *cli_options_str = "hp:t:";
+static const char *cli_options_str = "hVp:t:";
 
 //
 
@@ -37,6 +38,7 @@ usage(
         "    %s {options}\n\n"
         "  options:\n\n"
         "    -h/--help                  Show this information\n"
+        "    -V/--version               Display program version\n"
         "    -p/--fifo <path>           Path to the fifo the daemon is monitoring\n"
         "                               (default %s)\n"
         "    -t/--timeout <int>         Timeout in seconds for open and write to the named pipe\n"
@@ -98,6 +100,9 @@ main(
         switch ( opt_ch ) {
             case 'h':
                 usage(argv[0]);
+                exit(0);
+            case 'V':
+                printf(IPTRACKING_VERSION_STR "\n");
                 exit(0);
             case 'p':
                 fifo_filepath = optarg;

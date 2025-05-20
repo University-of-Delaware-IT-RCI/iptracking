@@ -166,7 +166,9 @@ $ make
 $ sudo make install
 ```
 
-Before the systemd service can be used, the configuration file must be created (we did **not** install it in our CMake configuration above).  In our case, that's `/usr/local/etc/iptracking.yml`.  Once that file has been created, the service can be started:
+Before the systemd service can be used, the daemon configuration file must be created (we did **not** install it in our CMake configuration above).  In our case, that's `/usr/local/etc/iptracking.yml`.  A description of the daemon configuration file can be found in a later section.
+
+Once that file has been created, the service can be started:
 
 ```
 $ sudo systemctl daemon-reload
@@ -234,3 +236,57 @@ usage:
 ```
 
 The timeout is present in order to prevent the program from blocking the PAM stack indefinitely, e.g. if the `iptracking-daemon` is not online.
+
+## Daemon configuration file
+
+The configuration is a YAML-formatted file.  Each top-level key in the document is a subsection below.
+
+### database
+
+The `database` key is associated with a mapping of key-value pairs:
+
+| Key | Description |
+| --- | ----------- |
+| `host` | The name or IP address of the database server |
+| `port` | The TCP/IP port on which the database server accepts remote connections |
+| `user` | The database user/role as which to connect|
+| `password` | The password for the user/role used |
+| `dbname` | The name of the database to which to connect |
+| `schema` | The name of the schema in the database that contains the iptracking tables/views/functions |
+
+Only those keys that are present will be used to connect to the server; if `port` is not present then the default TCP/IP port will be infered, for example.  Only the `dbname` key is mandatory.
+
+### fifo-file
+
+The `fifo-file` key is associated with a string containing the path to the named pipe that the daemon will monitor and to which the PAM helper will write event data.
+
+If omitted, the compiled-in default will be used.
+
+### log-pool
+
+The `log-pool` key is associated with a mapping of two other keys.
+
+#### records
+
+The `log-pool.records` key is associated with a mapping of key-value pairs:
+
+| Key | Description |
+| --- | ----------- |
+| `min` | The minimum number of event records the daemon will allocate |
+| `max` | The maximum number of event records the daemon will allocate; zero (0) implies no limit |
+| `delta` | When all event records are in-use and the maximum has not been reached, allocate this many additional records |
+
+The default for `min` and `delta` is 32:  each record is 128 bytes in size, so 32 of them fit in 4 KiB (a typical Linux page of memory).  The `max` defaults to zero (0).
+
+#### push-wait-seconds
+
+The `log-pool.push-wait-seconds` key is associated with a mapping of key-value pairs:
+
+| Key | Description |
+| --- | ----------- |
+| `min` | The initial (shortest) wait period when all records are in-use |
+| `max` | The maximum (longest) wait period when all records are in-use |
+| `grow-threshold` | How many retries at the current wait period must fail before the period is incremented |
+| `delta` | The number of seconds to increment the wait period |
+
+The `min`, `max`, and `delta` values are all in units of seconds.

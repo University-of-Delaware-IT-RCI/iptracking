@@ -1,10 +1,24 @@
+#
+# Example iptracking-daemon configuration file
+#
+# The only key that is technically necessary is the database.dbname
+# key; all other database.* keys may be inferred or unneeded on a
+# system.
+#
 database:
     host: hostname
     port: 5432
     user: iptracking
     password: some-secret-words-and-545644
     dbname: iptracking
+#
+# The fifo-file can be omitted if the compiled-in default is okay.
+#
 fifo-file: @FIFO_FILEPATH_DEFAULT@
+#
+# The log-pool group of keys control the event record count and
+# wait delay scheme (see the README.md for more info).
+#
 log-pool:
     records:
         delta: 32

@@ -10,6 +10,22 @@
 
 //
 
+static log_queue_params_t __log_queue_default_params = {
+        .records = {
+            .min = LOG_POOL_RECORDS_MIN,
+            .max = LOG_POOL_RECORDS_MAX,
+            .delta = LOG_POOL_RECORDS_DELTA
+        },
+        .push_wait_seconds = {
+            .min = LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_MIN,
+            .max = LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_MAX,
+            .delta = LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT,
+            .grow_threshold = LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT_THRESH
+        }
+    };
+
+//
+
 bool
 log_data_parse(
     log_data_t  *data,
@@ -82,17 +98,6 @@ log_data_parse(
         return true;
     }
     return false;
-}
-
-//
-
-bool
-log_data_parse_cstr(
-    log_data_t  *data,
-    const char  *cstr
-)
-{
-    return log_data_parse(data, cstr, strlen(cstr));
 }
 
 //
@@ -257,7 +262,11 @@ log_queue_create(
     
     if ( new_lq ) {
         memset(new_lq, 0, sizeof(log_queue_t));
-        new_lq->params = *params;
+        if ( params ) {
+            new_lq->params = *params;
+        } else {
+            new_lq->params = __log_queue_default_params;
+        }
         pthread_mutex_init(&new_lq->lock, NULL);
         pthread_cond_init(&new_lq->data_ready, NULL);
     }
@@ -346,6 +355,7 @@ log_queue_push(
             if ( n_waits >= (*lq)->params.push_wait_seconds.grow_threshold ) {
                 wait_sec += (*lq)->params.push_wait_seconds.delta;
                 if ( wait_sec > (*lq)->params.push_wait_seconds.max ) wait_sec = (*lq)->params.push_wait_seconds.max;
+                n_waits = 0;
             } else {
                 n_waits++;
             }

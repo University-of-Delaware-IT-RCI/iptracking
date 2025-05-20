@@ -296,12 +296,12 @@ config_read_yaml_file(
                         /*
                          * Check for any database config items:
                          */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "database")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "database")) ) {
                             const char*     *keys = db_conn_keys;
                             yaml_node_t     *dbnode;
                             
                             while ( *keys ) {
-                                if ( (dbnode = yaml_helper_doc_node_at_path(&config_doc, node, 0, *keys)) ) {
+                                if ( (dbnode = yaml_helper_doc_node_at_path(&config_doc, node, *keys)) ) {
                                     v = yaml_helper_get_scalar_value(dbnode);
                                     if ( v ) {
                                         db_conn_keywords[db_conn_idx] = *keys;
@@ -310,11 +310,17 @@ config_read_yaml_file(
                                 }
                                 keys++;
                             }
+                            
+                            /* schema? */
+                            if ( (dbnode = yaml_helper_doc_node_at_path(&config_doc, node, "schema")) ) {
+                                v = yaml_helper_get_scalar_value(dbnode);
+                                db_schema = v ? v : "";
+                            }
                         }
                         /*
                          * Check for the fifo file path:
                          */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "fifo-file")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "fifo-file")) ) {
                             const char  *s = yaml_helper_get_scalar_value(node);
                             
                             if ( ! s ) {
@@ -327,24 +333,24 @@ config_read_yaml_file(
                         /*
                          * Check for any log-pool config items:
                          */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "log-pool.records")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "log-pool.records")) ) {
                             yaml_node_t     *val_node;
                             
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "min")) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "min")) ) {
                                 if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_min) ) {
                                     ERROR("Configuration: invalid log-pool.records.min value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "max")) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "max")) ) {
                                 if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_max) ) {
                                     ERROR("Configuration: invalid log-pool.records.max value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "delta")) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "delta")) ) {
                                 if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_delta) ) {
                                     ERROR("Configuration: invalid log-pool.records.delta value");
                                     rc = false;
@@ -355,31 +361,31 @@ config_read_yaml_file(
                         /*
                          * Check for any wait time config items:
                          */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, 0, "log-pool.push-wait-seconds")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "log-pool.push-wait-seconds")) ) {
                             yaml_node_t     *val_node;
                             
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "min")) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "min")) ) {
                                 if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_min) ) {
                                     ERROR("Configuration: invalid log-pool.push-wait-seconds.min value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "max")) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "max")) ) {
                                 if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_max) ) {
                                     ERROR("Configuration: invalid log-pool.push-wait-seconds.max value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "delta")) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "delta")) ) {
                                 if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_dt) ) {
                                     ERROR("Configuration: invalid log-pool.push-wait-seconds.delta value");
                                     rc = false;
                                     break;
                                 }
                             }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, 0, "grow-threshold")) ) {
+                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "grow-threshold")) ) {
                                 if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_dt_thresh) ) {
                                     ERROR("Configuration: invalid log-pool.push-wait-seconds.grow-threshold value");
                                     rc = false;
@@ -484,11 +490,10 @@ static struct option cli_options[] = {
                    { "verbose", no_argument,       0,  'v' },
                    { "quiet",   no_argument,       0,  'q' },
                    { "config",  required_argument, 0,  'c' },
-                   { "schema",  required_argument, 0,  's' },
                    { "mkfifo",  no_argument,       0,  'm' },
                    { NULL,      0,                 0,   0  }
                };
-static const char *cli_options_str = "hVvqc:s:m";
+static const char *cli_options_str = "hVvqc:m";
 
 //
 
@@ -507,17 +512,16 @@ usage(
         "    -q/--quiet                 Decrease level of printing\n"
         "    -c/--config <filepath>     Read configuration directives from the YAML file\n"
         "                               at <filepath> (default: %s)\n"
-        "    -s/--schema <name>         Database schema to prefix tables/views/etc.\n"
-        "                               (default: %s)\n"
         "    -m/--mkfifo                Create the named pipe if it does not exist\n"
         "\n"
-        "  notes:\n\n"
+        "  defaults:\n\n"
+        "    - database schema is %s\n"
         "    - will read events from named pipe %s\n"
         "\n"
         "(v" IPTRACKING_VERSION_STR " built with " CC_VENDOR " %lu on " __DATE__ " " __TIME__ ")\n",
         exe,
         configuration_filepath_default,
-        ( (db_schema && *db_schema) ? db_schema : "<no-schema>" ),
+        ( (db_schema && *db_schema) ? db_schema : "not used" ),
         fifo_filepath,
         (unsigned long)CC_VERSION);
 }
@@ -554,11 +558,6 @@ main(
             case 'c':
                 config_filepath = optarg;
                 break;
-            case 's': {
-                db_schema = optarg;
-                while ( *db_schema && isspace(db_schema) ) db_schema++;
-                break;
-            }
             case 'm':
                 should_create_fifo = true;
                 break;
