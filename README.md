@@ -25,6 +25,8 @@ Logged events are read from the named pipe and added to an in-memory queue to be
 
 When logged events are read from the named pipe, a record must be allocated from the pool to hold the data.  If the pool has reached its record limit and none are available, the process must wait for a record to become available.  Each time this happens the program starts by waiting a base amount of time for some number of tries, then increases the wait time by a fixed value on each subsequent try:
 
+| Option | Default | Description |
+| ------ | ------- | ----------- |
 | `LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_MIN` | 5 | Initial wait period |
 | `LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_MAX` | 600 | Maximum wait period |
 | `LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT_THRESH` | 4 | Begin increasing the wait period after this many initial retries |
