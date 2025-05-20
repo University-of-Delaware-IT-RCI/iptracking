@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(iptracking-daemon
-        VERSION 1.2.3
+        VERSION 0.0.1
         DESCRIPTION "A multithreaded message-processing queue for SSH connections"
         LANGUAGES C)
 
@@ -14,6 +14,8 @@ include(GNUInstallDirs)
 set(CONFIGURATION_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_SYSCONFDIR}/iptracking.yml" CACHE PATH "Default configuration file path")
 
 option(SHOULD_INSTALL_CONFIG_TEMPLATE Off "Install a template configuration file")
+
+option(SHOULD_INSTALL_SYSTEMD_SERVICE Off "Install a systemd service for the daemon")
 
 set(LOG_POOL_RECORDS_MIN "32" CACHE STRING "Minimum number of logging records available to queue")
 set(LOG_POOL_RECORDS_MAX "0" CACHE STRING "Maximum number of logging records available to queue")
@@ -29,8 +31,13 @@ set(FIFO_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_RUNSTATEDIR}/iptracking.fifo" CA
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-find_path(LIBYAML_INCLUDE_DIR yaml.h REQUIRED)
-find_library(LIBYAML_LIBRARY yaml REQUIRED)
+if (DEFINED libyaml_ROOT)
+    find_path(LIBYAML_INCLUDE_DIR yaml.h HINTS "${libyaml_ROOT}/include" REQUIRED)
+    find_library(LIBYAML_LIBRARY yaml HINTS "${libyaml_ROOT}/lib" "${libyaml_ROOT}/lib64" REQUIRED)
+else ()
+    find_path(LIBYAML_INCLUDE_DIR yaml.h REQUIRED)
+    find_library(LIBYAML_LIBRARY yaml REQUIRED)
+endif ()
 
 find_package(PostgreSQL REQUIRED)
 if (PostgreSQL_VERSION_STRING VERSION_LESS "15")
@@ -59,7 +66,7 @@ target_link_libraries(iptracking-daemon
 if (${SHOULD_INSTALL_CONFIG_TEMPLATE} AND NOT EXISTS "${CONFIGURATION_FILEPATH_DEFAULT}")
     cmake_path(GET CONFIGURATION_FILEPATH_DEFAULT PARENT_PATH CONFIGURATION_FILEPATH)
     cmake_path(GET CONFIGURATION_FILEPATH_DEFAULT FILENAME CONFIGURATION_FILENAME)
-    install(FILES iptracking.yml
+    install(FILES "${PROJECT_BINARY_DIR}/iptracking.yml"
             DESTINATION "${CONFIGURATION_FILEPATH}"
             RENAME "${CONFIGURATION_FILENAME}"
             PERMISSIONS OWNER_READ OWNER_WRITE
@@ -71,7 +78,11 @@ install(TARGETS iptracking-daemon
             PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                         GROUP_READ             GROUP_EXECUTE)
 
-
+if (${SHOULD_INSTALL_SYSTEMD_SERVICE} AND NOT EXISTS "/etc/systemd/system/iptracking-daemon.service")
+    configure_file(iptracking-daemon.service.in iptracking-daemon.service)
+    install(FILES "${PROJECT_BINARY_DIR}/iptracking-daemon.service"
+            DESTINATION "/etc/systemd/system")
+endif ()
 
 add_executable(iptracking-pam-callback
         iptracking-pam-callback.c)

@@ -430,7 +430,7 @@ config_validate()
             ERROR("Configuration: unable to stat() named pipe %s", fifo_filepath);
             return false;
         }
-        if ( mkfifo(fifo_filepath, 0600) != 0 ) {
+        if ( mkfifo(fifo_filepath, 0660) != 0 ) {
             ERROR("Configuration: unable to create named pipe %s: errno=%d", fifo_filepath, errno);
             return false;
         }

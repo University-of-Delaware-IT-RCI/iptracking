@@ -61,6 +61,10 @@ fifo_timeout_handler(
 
 //
 
+extern char **environ;
+
+//
+
 int
 main(
     int             argc,
@@ -108,7 +112,7 @@ main(
                     fifo_timeout = i;
                 } else {
                     fprintf(stderr, "ERROR: invalid timeout: %s\n", optarg);
-                    exit(EINVAL);
+                    exit(100);
                 }
                 break;
             }
@@ -116,9 +120,58 @@ main(
     }
     
     /* We must have gotten values for all fields: */
-    if ( !(pam_type && *pam_type) ||
-         !(pam_user && *pam_user) ||
-         !(ssh_connection && *ssh_connection) ) exit(EINVAL);
+    if ( !(pam_type && *pam_type) ) exit(101);
+    if ( !(ssh_connection && *ssh_connection) ) {
+        ssh_connection = getenv("PAM_RHOST");
+        if ( !(ssh_connection && *ssh_connection) ) exit(102);
+        rc = snprintf(out_buffer_p, out_buffer_e - out_buffer_p, "0.0.0.0,%s,0,", ssh_connection);
+        if ( rc <= 0 ) exit(109);
+        out_buffer_p += rc;
+        rc = 0;
+    } else {
+        /* Isolate the ssh connection string fields: */
+        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
+        if ( !(*ssh_connection) ) exit(103);
+        ssh_connection_field_start[1] = ssh_connection;
+        while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
+        ssh_connection_field_end[1] = ssh_connection;
+        
+        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
+        if ( !(*ssh_connection) ) exit(104);
+        ssh_connection_field_start[2] = ssh_connection;
+        while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
+        ssh_connection_field_end[2] = ssh_connection;
+        
+        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
+        if ( !(*ssh_connection) ) exit(105);
+        ssh_connection_field_start[0] = ssh_connection;
+        while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
+        ssh_connection_field_end[0] = ssh_connection;
+
+        /* Enough room for the value and a comma? */
+        if ( (ssh_connection_field_end[0] - ssh_connection_field_start[0]) >= (2 + out_buffer_e - out_buffer_p) ) exit(106);
+    
+        memcpy(out_buffer_p, ssh_connection_field_start[0], ssh_connection_field_end[0] - ssh_connection_field_start[0]);
+        out_buffer_p += ssh_connection_field_end[0] - ssh_connection_field_start[0];
+        *out_buffer_p++ = ',';
+        
+        /* Enough room for the value and a comma? */
+        if ( (ssh_connection_field_end[1] - ssh_connection_field_start[1]) >= (2 + out_buffer_e - out_buffer_p) ) exit(107);
+    
+        memcpy(out_buffer_p, ssh_connection_field_start[1], ssh_connection_field_end[1] - ssh_connection_field_start[1]);
+        out_buffer_p += ssh_connection_field_end[1] - ssh_connection_field_start[1];
+        *out_buffer_p++ = ',';
+        
+        /* Enough room for the value and a comma? */
+        if ( (ssh_connection_field_end[1] - ssh_connection_field_start[1]) >= (2 + out_buffer_e - out_buffer_p) ) exit(108);
+    
+        memcpy(out_buffer_p, ssh_connection_field_start[2], ssh_connection_field_end[2] - ssh_connection_field_start[2]);
+        out_buffer_p += ssh_connection_field_end[2] - ssh_connection_field_start[2];
+        *out_buffer_p++ = ',';
+    }
+        
+    /* If the user is empty that implies either an empty uid or a key-based auth: */
+    if ( !(pam_user && *pam_user) ) pam_user = "<<EMPTY>>";
     
     /* Resolve the event name to an id: */
     event = log_event_parse_str(pam_type);
@@ -127,51 +180,10 @@ main(
     now_t = time(NULL);
     localtime_r(&now_t, &now_tm);
     strftime(now_s, sizeof(now_s), "%Y-%m-%d %H:%M:%S", &now_tm);
-         
-    /* Isolate the ssh connection string fields: */
-    while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
-    if ( !(*ssh_connection) ) exit(EINVAL);
-    ssh_connection_field_start[1] = ssh_connection;
-    while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
-    ssh_connection_field_end[1] = ssh_connection;
-    
-    while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
-    if ( !(*ssh_connection) ) exit(EINVAL);
-    ssh_connection_field_start[2] = ssh_connection;
-    while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
-    ssh_connection_field_end[2] = ssh_connection;
-    
-    while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
-    if ( !(*ssh_connection) ) exit(EINVAL);
-    ssh_connection_field_start[0] = ssh_connection;
-    while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
-    ssh_connection_field_end[0] = ssh_connection;
-    
-    /* Format the event: */
-    /* Enough room for the value and a comma? */
-    if ( (ssh_connection_field_end[0] - ssh_connection_field_start[0]) >= (2 + out_buffer_e - out_buffer_p) ) exit(ENOMEM);
-
-    memcpy(out_buffer_p, ssh_connection_field_start[0], ssh_connection_field_end[0] - ssh_connection_field_start[0]);
-    out_buffer_p += ssh_connection_field_end[0] - ssh_connection_field_start[0];
-    *out_buffer_p++ = ',';
-    
-    /* Enough room for the value and a comma? */
-    if ( (ssh_connection_field_end[1] - ssh_connection_field_start[1]) >= (2 + out_buffer_e - out_buffer_p) ) exit(ENOMEM);
-
-    memcpy(out_buffer_p, ssh_connection_field_start[1], ssh_connection_field_end[1] - ssh_connection_field_start[1]);
-    out_buffer_p += ssh_connection_field_end[1] - ssh_connection_field_start[1];
-    *out_buffer_p++ = ',';
-    
-    /* Enough room for the value and a comma? */
-    if ( (ssh_connection_field_end[1] - ssh_connection_field_start[1]) >= (2 + out_buffer_e - out_buffer_p) ) exit(ENOMEM);
-
-    memcpy(out_buffer_p, ssh_connection_field_start[2], ssh_connection_field_end[2] - ssh_connection_field_start[2]);
-    out_buffer_p += ssh_connection_field_end[2] - ssh_connection_field_start[2];
-    *out_buffer_p++ = ',';
     
     /* Add the event id, uid, and timestamp: */
     rc = snprintf(out_buffer_p, out_buffer_e - out_buffer_p, "%d,%s,%s", event, pam_user, now_s);
-    if ( rc <= 0 ) exit(EINVAL);
+    if ( rc <= 0 ) exit(109);
     out_buffer_p += rc;
     rc = 0;
     
@@ -182,7 +194,7 @@ main(
     
     /* Open the fifo for writing: */
     fifo_fd = open(fifo_filepath, O_WRONLY);
-    if ( fifo_fd < 0 ) exit(errno);
+    if ( fifo_fd < 0 ) exit(110);
     
     bytes_ready = out_buffer_p - out_buffer;
     out_buffer_p = out_buffer;
@@ -190,7 +202,7 @@ main(
         ssize_t bytes_written = write(fifo_fd, out_buffer_p, bytes_ready);
         
         if ( bytes_written < 0 ) {
-            if ( errno != EAGAIN ) exit(errno);
+            if ( errno != EAGAIN ) exit(111);
         } else if ( bytes_written > 0 ) {
             bytes_ready -= bytes_written;
             out_buffer_p += bytes_written;

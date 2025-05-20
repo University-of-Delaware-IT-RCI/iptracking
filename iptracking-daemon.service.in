@@ -1,0 +1,12 @@
+[Unit]
+Description=PAM SSH event logging daemon
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/sysconfig/iptracking-daemon
+ExecStartPre=-/bin/mkfifo -m 0660 @FIFO_FILEPATH_DEFAULT@
+ExecStart=@CMAKE_INSTALL_FULL_SBINDIR@/iptracking-daemon -m $OPTIONS
+
+[Install]
+WantedBy=multi-user.target
