@@ -26,7 +26,7 @@ Injection of data is abstracted into a server-side function, `log_one_event()`, 
 Some views are present that summarize the `inet_log` table data in different manners:
 
 | View | Description |
-| ==== | =========== |
+| ---- | ----------- |
 | `ips` | Collapses data for combinations of `dst_` and `src_ipaddr` to an event count and time range |
 | `nets_24` | Similar to `ips` but replaces the `src_ipaddr` with the IPv4 /24 subnet associated with each address |
 | `nets_16` | Similar to `ips` but replaces the `src_ipaddr` with the IPv4 /16 subnet associated with each address |
@@ -39,7 +39,7 @@ Some views are present that summarize the `inet_log` table data in different man
 Two tuple-yielding functions are present that mimic the `nets_*` and `agg_nets_*` views but for an arbitrary IPv4 network prefix:
 
 | Function | Description |
-| ======== | =========== |
+| -------- | ----------- |
 | `nets_view(<INTEGER>)` | Yields tuples similar to `ips` but replaces the `src_ipaddr` with the IPv4 subnet (prefix length as the sole argument to the function) associated with each address |
 | `agg_nets_view(<INTEGER>)` | Yields tuples similar to `agg_ips` but replaces the `src_ipaddr` with the IPv4 subnet (prefix length as the sole argument to the function) associated with each address |
 
