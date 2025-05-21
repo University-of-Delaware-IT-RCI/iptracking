@@ -1,18 +1,49 @@
-#
-# Example iptracking-daemon configuration file
-#
+####
+#### Example iptracking-daemon configuration file
+####
+
+##
+## The database mapping contains the driver-name and any keys
+## the specified driver may need/use.  The basic CSV file
+## is our default here:
+##
 database:
-    driver_name: csvfile
+    driver-name: csvfile
     filename: /var/log/iptracking.csv
     delimiter: "|"
-#
-# The fifo-file can be omitted if the compiled-in default is okay.
-#
+##
+## For postgres, the following keys form a nice minimum:
+##
+#    driver-name: postgresql
+#    dbname: iptracking
+#    host: psql.your.domain
+#    port: 5432
+#    user: iptracking_rw
+#    passfile: /usr/local/etc/psql-iptracking_rw.passwd
+##
+## There are a number of other keys accepted (see the README.md).
+##
+## For sqlite3, the following is a nice example:
+##
+#     driver-name: sqlite3
+#     filename: /var/log/iptracking.sqlite3db
+#     flags:
+#         - FULLMUTEX
+#         - PRIVATECACHE
+##
+## There are a few other flags and a URI can be used in lieu of
+## a filename (see the README.md).
+##
+
+##
+## The fifo-file can be omitted if the compiled-in default is okay.
+##
 fifo-file: @FIFO_FILEPATH_DEFAULT@
-#
-# The log-pool group of keys control the event record count and
-# wait delay scheme (see the README.md for more info).
-#
+
+##
+## The log-pool group of keys control the event record count and
+## wait delay scheme (see the README.md for more info).
+##
 log-pool:
     records:
         delta: 32

@@ -10,7 +10,7 @@ This project uses the PAM `pg_exec.so` service to execute an external program wi
 
 The daemon can be built with support for multiple database backends.  Regardless of what additional libraries a system may have, a `csvfile` database driver is present that logs events as one-per-line records with an arbitrary delimiter between fields.
 
-Each driver is described below, with its driver_name as the section header.
+Each driver is described below, with its `driver-name` value as the section header.
 
 ### csvfile
 
@@ -18,7 +18,7 @@ The configuration mapping can include the following keys:
 
 | Key | Description |
 | --- | ----------- |
-| `driver_name` | `csvfile` (mandatory for this driver) |
+| `driver-name` | `csvfile` (mandatory for this driver) |
 | `filename` | Path to the file to which events will be appended. |
 | `delimiter` | The string that will be used to separate each column; defaults to a comma. |
 
@@ -28,7 +28,7 @@ The configuration mapping can include the following keys:
 
 | Key | Description |
 | --- | ----------- |
-| `driver_name` | `sqlite3` (mandatory for this driver) |
+| `driver-name` | `sqlite3` (mandatory for this driver) |
 | `filename` | Path to the SQLite3 database file.  See also `uri` -- the two are mutually exclusive with `uri` as the default. |
 | `url` | URI specifying the SQLite3 database file.  See also `filename` -- the two are mutually exclusive with `uri` as the default. |
 | `flags` | Contains a sequence of SQLite3 database open flags that should be applied (see below). |
@@ -56,13 +56,15 @@ The [schema in this repository](psql-sqlite3.schema) is simple and straightforwa
 | `uid` | `TEXT` | User identifier attempting to connect |
 | `log_date` | `TEXT` | The date and time the event was logged |
 
+Please note that the daemon will **not** create the database file nor will it initialize its schema:  the database file must be created and the tables and views created (see the [schema in this repository](sqlite3-db.schema) before the daemon can use the database file.
+
 ### postgresql
 
 The configuration mapping can include the following keys:
 
 | Key | Description |
 | --- | ----------- |
-| `driver_name` | `postgresql` (mandatory for this driver) |
+| `driver-name` | `postgresql` (mandatory for this driver) |
 | `schema` | The PostgreSQL schema name that should prepend all table/view/function names.  By default no schema name is used. |
 
 Additionally, all keywords recognized by the PostgreSQL 17.5 database connection functions are permissible.  See [this page](https://www.postgresql.org/docs/17/libpq-connect.html#LIBPQ-PARAMKEYWORDS) for a list of the keywords with descriptions of their values.
