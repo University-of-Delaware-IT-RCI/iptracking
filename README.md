@@ -4,11 +4,70 @@ PAM and SSH services on a Linux system typically log authentication and session 
 
 In the former scheme there is a significant delay between the occurrence of events and their availability for analysis.  In the latter, access to the data for the sake of analysis may not be as flexible or even permissible.  Near real-time reaction to events is best implemented on the system itself, and the fastest path to extracting meaning from the events is to place them in a queryable database as they occur.
 
-This project uses the PAM `pg_exec.so` service to execute an external program with user authorization information.  That program writes the data to a named pipe which is monitored by a daemon that logs the event to a PostgreSQL database.
+This project uses the PAM `pg_exec.so` service to execute an external program with user authorization information.  That program writes the data to a named pipe which is monitored by a daemon that logs the event to a database.
 
-## Database schema
+## Database 
 
-The `iptracking` system makes use of a PostgreSQL database.  The [schema in this repository](psql-db.schema) is written to be the sole occupant of a database but could be modifed to introduce a namespace for all entities (and the daemon can be built with a default schema name and has the ability to set the schema name at runtime via a CLI flag).
+The daemon can be built with support for multiple database backends.  Regardless of what additional libraries a system may have, a `csvfile` database driver is present that logs events as one-per-line records with an arbitrary delimiter between fields.
+
+Each driver is described below, with its driver_name as the section header.
+
+### csvfile
+
+The configuration mapping can include the following keys:
+
+| Key | Description |
+| --- | ----------- |
+| `driver_name` | `csvfile` (mandatory for this driver) |
+| `filename` | Path to the file to which events will be appended. |
+| `delimiter` | The string that will be used to separate each column; defaults to a comma. |
+
+### sqlite3
+
+The configuration mapping can include the following keys:
+
+| Key | Description |
+| --- | ----------- |
+| `driver_name` | `sqlite3` (mandatory for this driver) |
+| `filename` | Path to the SQLite3 database file.  See also `uri` -- the two are mutually exclusive with `uri` as the default. |
+| `url` | URI specifying the SQLite3 database file.  See also `filename` -- the two are mutually exclusive with `uri` as the default. |
+| `flags` | Contains a sequence of SQLite3 database open flags that should be applied (see below). |
+
+Database open flags are discussed in depth on [this page](https://www.sqlite.org/c3ref/open.html):
+
+| Flag string | SQLite3 constant |
+| ----------- | ---------------- |
+| `URI` | `SQLITE_OPEN_URI` |
+| `MEMORY` | `SQLITE_OPEN_MEMORY` |
+| `NOMUTEX` | `SQLITE_OPEN_NOMUTEX` |
+| `FULLMUTEX` | `SQLITE_OPEN_FULLMUTEX` |
+| `SHAREDCACHE` | `SQLITE_OPEN_SHAREDCACHE` |
+| `PRIVATECACHE` | `SQLITE_OPEN_PRIVATECACHE` |
+| `NOFOLLOW` | `SQLITE_OPEN_NOFOLLOW` |
+
+The [schema in this repository](psql-sqlite3.schema) is simple and straightforward.  Columns present are:
+
+| Column | Type | Description |
+| ------ | ---- | ----------- |
+| `dst_ipaddr` | `TEXT` | IP address of the sshd server that logged this event |
+| `src_ipaddr` | `TEXT` | IP address of the remote client attempting to connect |
+| `src_port` | `INTEGER` | TCP/IP port from which the remote client connected |
+| `log_event` | `INTEGER` | `auth`=1, `open_session`=2, `close_session`=3 |
+| `uid` | `TEXT` | User identifier attempting to connect |
+| `log_date` | `TEXT` | The date and time the event was logged |
+
+### postgresql
+
+The configuration mapping can include the following keys:
+
+| Key | Description |
+| --- | ----------- |
+| `driver_name` | `postgresql` (mandatory for this driver) |
+| `schema` | The PostgreSQL schema name that should prepend all table/view/function names.  By default no schema name is used. |
+
+Additionally, all keywords recognized by the PostgreSQL 17.5 database connection functions are permissible.  See [this page](https://www.postgresql.org/docs/17/libpq-connect.html#LIBPQ-PARAMKEYWORDS) for a list of the keywords with descriptions of their values.
+
+The [schema in this repository](psql-db.schema) is written to be the sole occupant of a database but could be modifed to introduce a namespace for all entities (and the daemon can be built with a default schema name and has the ability to set the schema name at runtime via a CLI flag).
 
 The `inet_log` table contains all event tuples.  Columns present are:
 
@@ -43,7 +102,7 @@ Two tuple-yielding functions are present that mimic the `nets_*` and `agg_nets_*
 | `nets_view(<INTEGER>)` | Yields tuples similar to `ips` but replaces the `src_ipaddr` with the IPv4 subnet (prefix length as the sole argument to the function) associated with each address |
 | `agg_nets_view(<INTEGER>)` | Yields tuples similar to `agg_ips` but replaces the `src_ipaddr` with the IPv4 subnet (prefix length as the sole argument to the function) associated with each address |
 
-### Useful queries
+#### Useful queries
 
 The simplest query of any usefulness is the event count and time range:
 
@@ -137,6 +196,17 @@ When logged events are read from the named pipe, a record must be allocated from
 | `LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT_THRESH` | 4 | Begin increasing the wait period after this many initial retries |
 | `LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT` | 5 | Increase the wait period by this many seconds |
 
+### Database drivers
+
+The `csvfile` driver is always included in the daemon.
+
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `ENABLE_POSTGRESQL_DRIVER` | Off | Build the PostgreSQL database driver |
+| `PostgreSQL_ROOT` | | Prefix path hint for locating the PostgreSQL header/library |
+| `ENABLE_SQLITE3_DRIVER` | Off | Build the SQLite3 database driver |
+| `SQLite3_ROOT` | | Prefix path hint for locating the SQLite3 header/library |
+
 ### CMake build configuration
 
 The CMake infrastructure will look for a pthreads library; a libyaml library; and a PostgreSQL library (version 15 and up).
@@ -149,9 +219,11 @@ As an example, consider the `cmake` command used to generate the build system on
 
 ```
 $ mkdir build ; cd build
-$ vpkg_devrequire postgresql/17.5
+$ vpkg_require cmake/3.25.2
+$ vpkg_devrequire postgresql/17.5 sqlite3/3.34.1
 $ cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release \
-    -DPostgreSQL_ROOT="$POSTGRESQL_PREFIX" \
+    -DENABLE_POSTGRESQL_DRIVER=On -DPostgreSQL_ROOT="$POSTGRESQL_PREFIX" \
+    -DENABLE_SQLITE3_DRIVER=On -DSQLite3_ROOT="$SQLITE3_PREFIX" \
     -DSHOULD_INSTALL_SYSTEMD_SERVICE=On \
     -DFIFO_FILEPATH_DEFAULT=/var/run/iptracking.fifo \
     ..
@@ -227,12 +299,13 @@ usage:
   options:
 
     -h/--help                  Show this information
+    -V/--version               Display program version
     -p/--fifo <path>           Path to the fifo the daemon is monitoring
                                (default /var/run/iptracking.fifo)
     -t/--timeout <int>         Timeout in seconds for open and write to the named pipe
                                (default 5)
 
-(v1.2.3 built with GNU 40805 on May 19 2025 15:20:25)
+(v0.0.1 built with GNU 40805 on May 21 2025 16:25:32)
 ```
 
 The timeout is present in order to prevent the program from blocking the PAM stack indefinitely, e.g. if the `iptracking-daemon` is not online.
@@ -243,18 +316,7 @@ The configuration is a YAML-formatted file.  Each top-level key in the document 
 
 ### database
 
-The `database` key is associated with a mapping of key-value pairs:
-
-| Key | Description |
-| --- | ----------- |
-| `host` | The name or IP address of the database server |
-| `port` | The TCP/IP port on which the database server accepts remote connections |
-| `user` | The database user/role as which to connect|
-| `password` | The password for the user/role used |
-| `dbname` | The name of the database to which to connect |
-| `schema` | The name of the schema in the database that contains the iptracking tables/views/functions |
-
-Only those keys that are present will be used to connect to the server; if `port` is not present then the default TCP/IP port will be infered, for example.  Only the `dbname` key is mandatory.
+The `database` key is associated with a mapping of key-value pairs associated with a database driver.  See the **Database** section at the top of this document for more information on this mapping.
 
 ### fifo-file
 

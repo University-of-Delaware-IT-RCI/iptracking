@@ -1,0 +1,21 @@
+CREATE TABLE inet_log (
+    dst_ipaddr      TEXT NOT NULL,
+    src_ipaddr      TEXT NOT NULL,
+    src_port        INTEGER NOT NULL,
+    log_event       INETGER NOT NULL,
+    uid             TEXT NOT NULL,
+    log_date        TEXT NOT NULL
+);
+CREATE INDEX inet_log_dst_ipaddr ON inet_log(dst_ipaddr);
+CREATE INDEX inet_log_src_ipaddr ON inet_log(src_ipaddr);
+CREATE INDEX inet_log_uid ON inet_log(uid);
+
+CREATE VIEW ips AS
+    SELECT dst_ipaddr, src_ipaddr AS ipaddr, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
+        FROM inet_log
+        GROUP BY dst_ipaddr, src_ipaddr;
+
+CREATE VIEW agg_ips AS
+    SELECT src_ipaddr AS ipaddr, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
+        FROM inet_log
+        GROUP BY src_ipaddr;

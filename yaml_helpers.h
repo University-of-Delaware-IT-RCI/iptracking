@@ -1,6 +1,6 @@
 /*
  * iptracking
- * yaml-helpers.h
+ * yaml_helpers.h
  *
  * Utility routines for the libyaml API.
  *

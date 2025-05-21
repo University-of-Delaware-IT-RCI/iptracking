@@ -1,13 +1,13 @@
 /*
  * iptracking
- * yaml-helpers.c
+ * yaml_helpers.c
  *
  * Utility routines for the libyaml API.
  *
  */
  
 #include "iptracking-daemon.h"
-#include "yaml-helpers.h"
+#include "yaml_helpers.h"
 
 //
 

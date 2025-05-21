@@ -1,16 +1,10 @@
 #
 # Example iptracking-daemon configuration file
 #
-# The only key that is technically necessary is the database.dbname
-# key; all other database.* keys may be inferred or unneeded on a
-# system.
-#
 database:
-    host: hostname
-    port: 5432
-    user: iptracking
-    password: some-secret-words-and-545644
-    dbname: iptracking
+    driver_name: csvfile
+    filename: /var/log/iptracking.csv
+    delimiter: "|"
 #
 # The fifo-file can be omitted if the compiled-in default is okay.
 #

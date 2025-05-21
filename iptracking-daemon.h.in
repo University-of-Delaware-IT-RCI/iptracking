@@ -20,7 +20,6 @@
 
 #include <yaml.h>
 #include <pthread.h>
-#include <libpq-fe.h>
 
 //
 
@@ -73,10 +72,11 @@
 
 //
 
-#define FIFO_FILEPATH_DEFAULT "@FIFO_FILEPATH_DEFAULT@"
+#cmakedefine HAVE_POSTGRESQL
+#cmakedefine HAVE_SQLITE3
 
 //
 
-#define DB_SCHEMA_DEFAULT "@DB_SCHEMA_DEFAULT@"
+#define FIFO_FILEPATH_DEFAULT "@FIFO_FILEPATH_DEFAULT@"
 
 #endif /* __IPTRACKING_DAEMON_H__ */

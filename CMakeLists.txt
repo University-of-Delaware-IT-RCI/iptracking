@@ -65,13 +65,6 @@ set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT_THRESH "4" CACHE STRING "Number of fai
 set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT "5" CACHE STRING "Seconds to increase wait time after threshold")
 
 #
-# If the iptracking tables/views/functions were created in a Postgres named schema in
-# the database, this option can be set to that schema name (there's a CLI option to
-# set/override if/when necessary):
-#
-set(DB_SCHEMA_DEFAULT "" CACHE STRING "Default database schema name for the iptracking tables/views/functions")
-
-#
 # Path to the named pipe that the daemon will monitor and to which the callback program
 # will write events:
 #
@@ -97,9 +90,22 @@ endif ()
 #
 # Find a PostgreSQL package at least 15.x or newer:
 #
-find_package(PostgreSQL REQUIRED)
-if (PostgreSQL_VERSION_STRING VERSION_LESS "15")
-    message(FATAL_ERROR "PostgreSQL 15 of newer is required, found ${PostgreSQL_VERSION_STRING}")
+option(ENABLE_POSTGRESQL_DRIVER Off "Include the PostgreSQL database driver")
+if (ENABLE_POSTGRESQL_DRIVER)
+    set(HAVE_POSTGRESQL On)
+    find_package(PostgreSQL REQUIRED)
+    if (PostgreSQL_VERSION_STRING VERSION_LESS "15")
+        message(FATAL_ERROR "PostgreSQL 15 of newer is required, found ${PostgreSQL_VERSION_STRING}")
+    endif ()
+endif ()
+
+#
+# Find an SQLite3 package:
+#
+option(ENABLE_SQLITE3_DRIVER Off "Include the SQLite3 database driver")
+if (ENABLE_SQLITE3_DRIVER)
+    set(HAVE_SQLITE3 On)
+    find_package(SQLite3 REQUIRED)
 endif ()
 
 #
@@ -130,7 +136,8 @@ configure_file(iptracking-daemon.service.in iptracking-daemon.service)
 add_executable(iptracking-daemon
         logging.c
         log_queue.c
-        yaml-helpers.c
+        yaml_helpers.c
+        db_interface.c
         iptracking-daemon.c)
 target_include_directories(iptracking-daemon
     PUBLIC
@@ -141,8 +148,15 @@ target_include_directories(iptracking-daemon
 target_link_libraries(iptracking-daemon
     PRIVATE
         Threads::Threads
-        PostgreSQL::PostgreSQL
         "${LIBYAML_LIBRARY}")
+if (HAVE_POSTGRESQL)
+    target_include_directories(iptracking-daemon PUBLIC PostgreSQL::PostgreSQL)
+    target_link_libraries(iptracking-daemon PRIVATE PostgreSQL::PostgreSQL)
+endif ()
+if (HAVE_SQLITE3)
+    target_include_directories(iptracking-daemon PUBLIC SQLite::SQLite3)
+    target_link_libraries(iptracking-daemon PRIVATE SQLite::SQLite3)
+endif ()
 # Install the executable in the sbin/ directory with owner and
 # group privileges only:
 install(TARGETS iptracking-daemon

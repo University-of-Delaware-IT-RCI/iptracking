@@ -9,7 +9,8 @@
 #include "iptracking-daemon.h"
 #include "logging.h"
 #include "log_queue.h"
-#include "yaml-helpers.h"
+#include "db_interface.h"
+#include "yaml_helpers.h"
 
 //
 
@@ -32,51 +33,14 @@ static int log_pool_push_wait_seconds_dt = LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT
 
 static bool should_create_fifo = false;
 static const char *fifo_filepath = FIFO_FILEPATH_DEFAULT;
-
-//
-
-static const char *db_schema = DB_SCHEMA_DEFAULT;
+static db_ref event_db = NULL;
 
 //
 
 typedef struct {
     log_queue_ref   lq;
+    db_ref          db;
 } thread_context_t;
-
-//
-
-static unsigned int db_conn_idx = 0;
-
-static const char* db_conn_keys[] = {
-        "host",
-        "port",
-        "user",
-        "password",
-        "dbname",
-        NULL
-    };
-static const char* db_conn_keywords[] = {
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL
-    };
-static const char* db_conn_values[] = {
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL
-    };
-    
-//
-
-#define DB_LOG_STMT_NAME_STR "log_one_event"
-#define DB_LOG_STMT_NPARAMS 6
-#define DB_LOG_STMT_QUERY_FORMAT "SELECT %s%slog_one_event($1, $2, $3, $4, $5, $6);"
 
 //
 
@@ -85,57 +49,13 @@ db_runloop(
     thread_context_t    *context
 )
 {
-    static const char   *db_log_stmt_name = DB_LOG_STMT_NAME_STR;
-    static const char   *db_log_stmt_query_format = DB_LOG_STMT_QUERY_FORMAT;
-    static const int    db_log_stmt_nparams = DB_LOG_STMT_NPARAMS;
-    PGconn              *db_conn = NULL;
-    PGresult            *db_result;
-    ExecStatusType      db_rc;
     bool                is_connecting = true;
+    const char          *error_msg = NULL;
     
-    while ( is_connecting ) {
-        INFO("Database: attempting connection...");
-        db_conn = PQconnectdbParams(db_conn_keywords, db_conn_values, 0);
-        if ( db_conn ) {
-            if ( PQstatus(db_conn) == CONNECTION_OK ) {
-                const char  *db_log_stmt_query = NULL;
-                int         db_log_stmt_query_len;
-                
-                INFO("Database: connection okay, preparing query");
-                
-                /* Prepare the query with the schema et al.: */
-                db_log_stmt_query_len = asprintf(&db_log_stmt_query, db_log_stmt_query_format,
-                                                    (db_schema && *db_schema) ? db_schema : "",
-                                                    (db_schema && *db_schema) ? "." : "");
-                if ( db_log_stmt_query_len && db_log_stmt_query ) {
-                    /* Send the query to the server for preparation: */
-                    db_result = PQprepare(db_conn, db_log_stmt_name, db_log_stmt_query,
-                                        db_log_stmt_nparams, NULL);
-                    db_rc = PQresultStatus(db_result);
-                    PQclear(db_result);
-                    free((void*)db_log_stmt_query);
-                    switch ( db_rc ) {
-                        case PGRES_COMMAND_OK:
-                            /* Log the success and exit the loop: */
-                            INFO("Database: logging query prepared");
-                            is_connecting = false;
-                            continue;
-                        default:
-                            ERROR("Database: failed to prepare logging query (%d): %s",
-                                    db_rc, PQerrorMessage(db_conn));
-                            break;
-                    }
-                } else {
-                    ERROR("Database: failed to generate prepared query statement");
-                }
-                break;
-            }
-            INFO("Database: connection failure: %s", PQerrorMessage(db_conn));
-            PQfinish(db_conn);
-            db_conn = NULL;
-        }
+    while ( ! db_open(context->db, &error_msg) ) {
         // Try again in 5 seconds:
-        ERROR("Database: unable to connect to database, will retry");
+        ERROR("Database: unable to connect to database, will retry: %s",
+            error_msg ? error_msg : "unknown");
         sleep(5);
     }
     while ( true ) {
@@ -143,47 +63,27 @@ db_runloop(
         
         /* The log_queue_pop() function will block until a record becomes available: */
         if ( log_queue_pop(&context->lq, &data) ) {
-            const char*     param_values[DB_LOG_STMT_NPARAMS];
-            char            src_port_str[32];
-            
-            snprintf(src_port_str, sizeof(src_port_str), "%hu", data.src_port);
-            
-            DEBUG("Database: received data { %s, %s, %s, %s, %hu, %s }",
-                data.log_date,
-                log_event_to_str(data.event),
-                data.uid,
-                data.src_ipaddr,
-                data.src_port,
-                data.dst_ipaddr);
-            
-            param_values[0] = data.dst_ipaddr;
-            param_values[1] = data.src_ipaddr;
-            param_values[2] = src_port_str;
-            param_values[3] = log_event_to_str(data.event);
-            param_values[4] = data.uid;
-            param_values[5] = data.log_date;
-            db_result = PQexecPrepared(db_conn, db_log_stmt_name, db_log_stmt_nparams,
-                                param_values, NULL, NULL, 0);
-            db_rc = PQresultStatus(db_result);
-            PQclear(db_result);
-            switch ( db_rc ) {
-                case PGRES_COMMAND_OK:
-                case PGRES_TUPLES_OK:
-                    DEBUG("Database: data logged");
-                    break;
-                default:
-                    ERROR("Database: unable to log data{ %s, %s, %s, %s, %hu, %s }",
-                        data.log_date,
-                        log_event_to_str(data.event),
-                        data.uid,
-                        data.src_ipaddr,
-                        data.src_port,
-                        data.dst_ipaddr);
-                    break;
+            if ( db_log_one_event(context->db, &data, &error_msg) ) {
+                DEBUG("Database: logged data { %s, %s, %s, %s, %hu, %s }",
+                    data.log_date,
+                    log_event_to_str(data.event),
+                    data.uid,
+                    data.src_ipaddr,
+                    data.src_port,
+                    data.dst_ipaddr);
+            } else {
+                ERROR("Database: unable to log data { %s, %s, %s, %s, %hu, %s }: %s",
+                    data.log_date,
+                    log_event_to_str(data.event),
+                    data.uid,
+                    data.src_ipaddr,
+                    data.src_port,
+                    data.dst_ipaddr,
+                    error_msg ? error_msg : "unknown");
             }
         }
     }
-    PQfinish(db_conn);
+    db_close(context->db, NULL);
     return 0;
 }
 
@@ -242,7 +142,7 @@ event_thread_entry(
                 p = read_buffer;
                 p_end = read_buffer + p_read - 1;
                 while ( (p < p_end) && *p && isspace(*p) ) p++;
-                while ( (p < p_end) && *p_end && isspace(*p_end)) p_end--;
+                while ( (p < p_end) && *p_end && isspace(*p_end)) *p_end-- = '\0';
                 if ( p < p_end ) {
                     if ( log_data_parse(&data, read_buffer, (p_end - p) + 1) ) {
                         log_queue_push(&CONTEXT->lq, &data);
@@ -297,25 +197,7 @@ config_read_yaml_file(
                          * Check for any database config items:
                          */
                         if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "database")) ) {
-                            const char*     *keys = db_conn_keys;
-                            yaml_node_t     *dbnode;
-                            
-                            while ( *keys ) {
-                                if ( (dbnode = yaml_helper_doc_node_at_path(&config_doc, node, *keys)) ) {
-                                    v = yaml_helper_get_scalar_value(dbnode);
-                                    if ( v ) {
-                                        db_conn_keywords[db_conn_idx] = *keys;
-                                        db_conn_values[db_conn_idx++] = v;
-                                    }
-                                }
-                                keys++;
-                            }
-                            
-                            /* schema? */
-                            if ( (dbnode = yaml_helper_doc_node_at_path(&config_doc, node, "schema")) ) {
-                                v = yaml_helper_get_scalar_value(dbnode);
-                                db_schema = v ? v : "";
-                            }
+                            event_db = db_alloc(NULL, &config_doc, node);
                         }
                         /*
                          * Check for the fifo file path:
@@ -420,17 +302,16 @@ config_read_yaml_file(
 bool
 config_validate()
 {
-    int         idx;
-    struct stat finfo;
+    const char      *error_msg = NULL;
+    struct stat     finfo;
     
-    /* At the very least the database name is needed: */
-    idx = 0;
-    while ( idx < db_conn_idx ) {
-        if ( strcmp(db_conn_keywords[idx], "dbname") == 0 ) break;
-        idx++;
+    /* Check the database config: */
+    if ( ! event_db ) {
+        ERROR("Configuration: lacks a database configuration");
+        return false;
     }
-    if ( idx == db_conn_idx ) {
-        ERROR("Configuration: lacks a database.dbname value");
+    if ( ! db_has_valid_configuration(event_db, &error_msg) ) {
+        ERROR("Configuration: database configuration is invalid: %s", error_msg ? error_msg : "unknown");
         return false;
     }
     
@@ -479,6 +360,8 @@ config_validate()
     INFO("           log-pool.push-wait-seconds.delta = %lus", log_pool_push_wait_seconds_dt);
     INFO("  log-pool.push-wait-seconds.grow-threshold = %lu", log_pool_push_wait_seconds_dt_thresh);
     
+    db_summarize_to_log(event_db);
+    
     return true;
 }
 
@@ -502,6 +385,9 @@ usage(
     const char  *exe
 )
 {
+    db_driver_iterator_t    driver_iter = NULL;
+    const char              *driver_name;
+    
     printf(
         "usage:\n\n"
         "    %s {options}\n\n"
@@ -515,14 +401,16 @@ usage(
         "    -m/--mkfifo                Create the named pipe if it does not exist\n"
         "\n"
         "  defaults:\n\n"
-        "    - database schema is %s\n"
         "    - will read events from named pipe %s\n"
         "\n"
-        "(v" IPTRACKING_VERSION_STR " built with " CC_VENDOR " %lu on " __DATE__ " " __TIME__ ")\n",
+        "  database drivers:\n\n",
         exe,
         configuration_filepath_default,
-        ( (db_schema && *db_schema) ? db_schema : "not used" ),
-        fifo_filepath,
+        fifo_filepath);
+    while ( (driver_name = db_driver_enumerate_drivers(&driver_iter)) ) printf("    - %s\n", driver_name);
+    printf(
+        "\n"
+        "(v" IPTRACKING_VERSION_STR " built with " CC_VENDOR " %lu on " __DATE__ " " __TIME__ ")\n",
         (unsigned long)CC_VERSION);
 }
 
@@ -585,6 +473,7 @@ main(
     
     /* Create the log queue: */
     tc.lq = log_queue_create(&lq_params);
+    tc.db = event_db;
     
     /* Spawn the database consumer thread: */
     pthread_create(&db_thread, NULL, db_thread_entry, (void*)&tc);
