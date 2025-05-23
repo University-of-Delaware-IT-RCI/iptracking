@@ -36,9 +36,9 @@ database:
 ##
 
 ##
-## The fifo-file can be omitted if the compiled-in default is okay.
+## The socket-file can be omitted if the compiled-in default is okay.
 ##
-fifo-file: @FIFO_FILEPATH_DEFAULT@
+socket-file: @SOCKET_FILEPATH_DEFAULT@
 
 ##
 ## The log-pool group of keys control the event record count and

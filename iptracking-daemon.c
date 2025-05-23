@@ -12,6 +12,11 @@
 #include "db_interface.h"
 #include "yaml_helpers.h"
 
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <poll.h>
+
 //
 
 static const char *configuration_filepath_default = CONFIGURATION_FILEPATH_DEFAULT;
@@ -31,9 +36,8 @@ static int log_pool_push_wait_seconds_dt = LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT
 
 //
 
-static bool should_create_fifo = false;
-static const char *fifo_filepath = FIFO_FILEPATH_DEFAULT;
-static db_ref event_db = NULL;
+static bool is_running = true;
+static const char *socket_filepath = SOCKET_FILEPATH_DEFAULT;
 
 //
 
@@ -52,13 +56,13 @@ db_runloop(
     bool                is_connecting = true;
     const char          *error_msg = NULL;
     
-    while ( ! db_open(context->db, &error_msg) ) {
+    while ( is_running && ! db_open(context->db, &error_msg) ) {
         // Try again in 5 seconds:
         ERROR("Database: unable to connect to database, will retry: %s",
             error_msg ? error_msg : "unknown");
         sleep(5);
     }
-    while ( true ) {
+    while ( is_running ) {
         log_data_t      data;
         
         /* The log_queue_pop() function will block until a record becomes available: */
@@ -96,9 +100,8 @@ db_thread_entry(
 {
     thread_context_t    *CONTEXT = (thread_context_t*)context;
     
-    while ( true ) {
-        db_runloop(CONTEXT);
-    }
+    while ( is_running )  db_runloop(CONTEXT);
+    INFO("Database: exiting runloop");
     return NULL;
 }
 
@@ -110,57 +113,130 @@ event_thread_entry(
 )
 {
     thread_context_t    *CONTEXT = (thread_context_t*)context;
-    char                read_buffer[sizeof(log_data_t) + 4];
+    struct sockaddr_un  server_addr;
+    log_data_t          data_buffer;
+    int                 on = 1, off = 0;
     
-    while ( true ) {
-        int             fifo_fd = open(fifo_filepath, O_RDONLY);
+    if ( strlen(socket_filepath) >= sizeof(server_addr.sun_path) ) {
+        FATAL("Event reader: socket file path is too long (%d >= %d)",
+                    strlen(socket_filepath), sizeof(server_addr.sun_path));
+    }
+    
+    while ( is_running ) {
+        int             rc, server_fd;
         
-        if ( fifo_fd >= 0 ) {
-            char        *p = read_buffer, *p_end;
-            size_t      p_len = sizeof(read_buffer), p_read;
-            ssize_t     nbytes;
-            bool        success = true;
+        /* Get the socket open: */
+        if ( (server_fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1 ) {
+            ERROR("Event reader: unable to create Unix socket (errno=%d)", errno);
+            sleep(5);
+            continue;
+        }
+        DEBUG("Event reader: socket %d created", server_fd);
+        if ( setsockopt(server_fd, SOL_SOCKET,  SO_REUSEADDR, (char*)&on, sizeof(on)) < 0 ) {
+            WARN("Event reader: unable to set REUSEADDR on socket (errno=%d)", errno);
+        }
+        DEBUG("Event reader: REUSEADDR set on socket %d", server_fd);
+        if ( fcntl(server_fd, F_SETFL, O_NONBLOCK) < 0 ) {
+            ERROR("Event reader: unable to set O_NONBLOCK on socket (errno=%d)", errno);
+            sleep(5);
+            continue;
+        }
+        DEBUG("Event reader: O_NONBLOCK set on socket %d", server_fd);
+        
+        /* Bind the socket to the file system: */
+        memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sun_family = AF_UNIX;
+        strncpy(server_addr.sun_path, socket_filepath, sizeof(server_addr.sun_path));
+        if ( bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+            ERROR("Event reader: unable to bind Unix socket to file system (errno=%d)", errno);
+            close(server_fd);
+            sleep(5);
+            continue;
+        }
+        DEBUG("Event reader: socket %d bound to %s", server_fd, socket_filepath);
+        
+        /* Start listening for connections: */
+        if ( listen(server_fd, 5) == -1 ) {
+            ERROR("Event reader: unable to listen on Unix socket (errno=%d)", errno);
+            close(server_fd);
+            sleep(5);
+            continue;
+        }
+        DEBUG("Event reader: socket %d listening...", server_fd);
+        
+        while ( is_running && (server_fd >= 0) ) {
+            struct pollfd   server_fds;
+            int             client_fd;
+            bool            is_polling = true, is_accepting = true;
             
-            /* Read all data: */
-            memset(read_buffer, 0, sizeof(read_buffer));
-            DEBUG("Event reader: reading event from named pipe");
-            while ( success && p_len && ((nbytes = read(fifo_fd, p, p_len)) != 0) ) {
-                if ( nbytes < 0 ) {
-                    if ( errno == EAGAIN ) continue;
-                    success = false;
-                } else {
-                    p += nbytes;
-                    p_len -= nbytes;
+            /* Poll for connections: */
+            server_fds.fd = server_fd;
+            server_fds.events = POLLIN;
+            while ( is_running && is_polling ) {
+                switch ( poll(&server_fds, 1, 30) ) {
+                    case -1: {
+                        switch ( errno ) {
+                            case EINTR:
+                                break;
+                            default:
+                                DEBUG("Event reader: poll socket %d failed (errno=%d)", server_fd, errno);
+                                is_accepting = false;
+                                is_polling = false;
+                                break;
+                        }
+                    }
+                    case 0:
+                        break;
+                    default:
+                        if ( (server_fds.revents | POLLIN) == POLLIN ) {
+                            is_polling = false;
+                            DEBUG("Event reader: connection ready on socket %d", server_fd);
+                        }
+                        break;
                 }
             }
-            p_read = (sizeof(read_buffer) - p_len);
-            DEBUG("Event reader: read event of size %lld bytes", (long long)p_read);
-            if ( success && p_len ) {
-                log_data_t  data;
-                
-                /* Remove leading and trailing whitespace: */
-                p = read_buffer;
-                p_end = read_buffer + p_read - 1;
-                while ( (p < p_end) && *p && isspace(*p) ) p++;
-                while ( (p < p_end) && *p_end && isspace(*p_end)) *p_end-- = '\0';
-                if ( p < p_end ) {
-                    if ( log_data_parse(&data, read_buffer, (p_end - p) + 1) ) {
-                        log_queue_push(&CONTEXT->lq, &data);
-                    } else {
-                        WARN("Event reader: invalid event string: %s", read_buffer);
+            if ( is_running && is_accepting ) {
+                /* Accept the connection: */
+                client_fd = accept(server_fd, NULL, NULL);
+                if ( client_fd < 0 ) {
+                    switch ( errno ) {
+                        case ECONNABORTED:
+                        case EINTR:
+                            /* There are okay, just keep going */
+                            break;
+                        default:
+                            /* All other errors are fatal: */
+                            ERROR("Event reader: non-trivial failure during accept (errno=%d)", errno);
+                            close(server_fd);
+                            server_fd = -1;
+                            break;
                     }
                 } else {
-                    WARN("Event reader: empty event");
+                    ssize_t nbytes;
+                    
+                    DEBUG("Event reader: accepted connection");
+                    nbytes = recv(client_fd, &data_buffer, sizeof(data_buffer), MSG_WAITALL);
+                    DEBUG("Event reader: read %lld bytes", (long long)nbytes);
+                    if ( nbytes == sizeof(data_buffer) ) {
+                        if ( log_data_is_valid(&data_buffer) ) {
+                            log_queue_push(&CONTEXT->lq, &data_buffer);
+                        } else {
+                            ERROR("Event reader: invalid event read from client");
+                        }
+                    } else if ( nbytes < 0 ) {
+                        ERROR("Event reader: error while reading event from client (errno=%d)", errno);
+                    } else {
+                        ERROR("Event reader: event was not correct byte size, discarding");
+                    }
+                    close(client_fd);
                 }
-            } else {
-                WARN((p_len ? "Event reader: read failure" : "Event reader: event overflow"));
             }
-            close(fifo_fd);
-        } else {
-            ERROR("Event reader: unable to open named pipe %s (errno=%d)", fifo_filepath, errno);
-            sleep(5);
+            if ( ! is_accepting ) break;
         }
+        shutdown(server_fd, SHUT_RDWR);
+        close(server_fd);
     }
+    INFO("Event reader: exiting runloop");
     return NULL;
 }
 
@@ -168,7 +244,8 @@ event_thread_entry(
 
 bool
 config_read_yaml_file(
-    const char  *fpath
+    const char  *fpath,
+    db_ref      *event_db
 )
 {
     bool        rc = false;
@@ -197,20 +274,20 @@ config_read_yaml_file(
                          * Check for any database config items:
                          */
                         if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "database")) ) {
-                            event_db = db_alloc(NULL, &config_doc, node);
+                            *event_db = db_alloc(NULL, &config_doc, node);
                         }
                         /*
-                         * Check for the fifo file path:
+                         * Check for the socket file path:
                          */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "fifo-file")) ) {
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "socket-file")) ) {
                             const char  *s = yaml_helper_get_scalar_value(node);
                             
                             if ( ! s ) {
-                                ERROR("Configuration: invalid fifo-file value");
+                                ERROR("Configuration: invalid socket-file value");
                                 rc = false;
                                 break;
                             }
-                            fifo_filepath = s;
+                            socket_filepath = s;
                         }
                         /*
                          * Check for any log-pool config items:
@@ -300,7 +377,9 @@ config_read_yaml_file(
 //
 
 bool
-config_validate()
+config_validate(
+    db_ref          event_db
+)
 {
     const char      *error_msg = NULL;
     struct stat     finfo;
@@ -327,29 +406,17 @@ config_validate()
         return false;
     }
     
-    /* Check access and file type for the fifo: */
-    if ( stat(fifo_filepath, &finfo) != 0 ) {
-        if ( ! should_create_fifo ) {
-            ERROR("Configuration: unable to stat() named pipe %s", fifo_filepath);
-            return false;
-        }
-        if ( mkfifo(fifo_filepath, 0660) != 0 ) {
-            ERROR("Configuration: unable to create named pipe %s: errno=%d", fifo_filepath, errno);
-            return false;
-        }
-        WARN("Configuration: created named pipe %s", fifo_filepath);
-    } else {
-        if ( (finfo.st_mode & S_IFMT) != S_IFIFO ) {
-            ERROR("Configuration: %s is not a named pipe", fifo_filepath);
-            return false;
-        }
-        if ( access(fifo_filepath, R_OK) != 0 ) {
-            ERROR("Configuration: no read access to named pipe %s", fifo_filepath);
+    /* The socket file cannot exist: */
+    if ( stat(socket_filepath, &finfo) == 0 ) {
+        int     rc = unlink(socket_filepath);
+        
+        if ( rc != 0 ) {
+            ERROR("Configuration: socket file %s exists and could not be removed (errno=%d)", socket_filepath, errno);
             return false;
         }
     }
     
-    INFO("                                  fifo-file = %s", fifo_filepath);
+    INFO("                                socket-file = %s", socket_filepath);
     
     INFO("                       log-pool.records.min = %lu", log_pool_records_min);
     INFO("                       log-pool.records.max = %lu", log_pool_records_max);
@@ -373,10 +440,9 @@ static struct option cli_options[] = {
                    { "verbose", no_argument,       0,  'v' },
                    { "quiet",   no_argument,       0,  'q' },
                    { "config",  required_argument, 0,  'c' },
-                   { "mkfifo",  no_argument,       0,  'm' },
                    { NULL,      0,                 0,   0  }
                };
-static const char *cli_options_str = "hVvqc:m";
+static const char *cli_options_str = "hVvqc:";
 
 //
 
@@ -398,20 +464,53 @@ usage(
         "    -q/--quiet                 Decrease level of printing\n"
         "    -c/--config <filepath>     Read configuration directives from the YAML file\n"
         "                               at <filepath> (default: %s)\n"
-        "    -m/--mkfifo                Create the named pipe if it does not exist\n"
         "\n"
         "  defaults:\n\n"
-        "    - will read events from named pipe %s\n"
+        "    - will read events from socket file %s\n"
         "\n"
         "  database drivers:\n\n",
         exe,
         configuration_filepath_default,
-        fifo_filepath);
+        socket_filepath);
     while ( (driver_name = db_driver_enumerate_drivers(&driver_iter)) ) printf("    - %s\n", driver_name);
     printf(
         "\n"
         "(v" IPTRACKING_VERSION_STR " built with " CC_VENDOR " %lu on " __DATE__ " " __TIME__ ")\n",
         (unsigned long)CC_VERSION);
+}
+
+//
+
+static pthread_mutex_t shutdown_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t shutdown_cond = PTHREAD_COND_INITIALIZER;
+
+void*
+shutdown_thread_entry(
+    void    *context
+)
+{
+    thread_context_t    *CONTEXT = (thread_context_t*)context;
+    
+    pthread_mutex_lock(&shutdown_mutex);
+    INFO("Shutdown: awaiting signal...");
+    pthread_cond_wait(&shutdown_cond, &shutdown_mutex);
+    INFO("Shutdown: ...received signal.");
+    is_running = false;
+    log_queue_interrupt_pop(&CONTEXT->lq);
+    pthread_mutex_unlock(&shutdown_mutex);
+    return NULL;
+}
+
+//
+
+void
+handle_termination(
+    int     signum
+)
+{
+    pthread_mutex_lock(&shutdown_mutex);
+    pthread_cond_broadcast(&shutdown_cond);
+    pthread_mutex_unlock(&shutdown_mutex);
 }
 
 //
@@ -422,11 +521,15 @@ main(
     char* const*    argv
 )
 {
-    pthread_t           db_thread, event_thread;
+    pthread_t           db_thread, event_thread, shutdown_thread;
     thread_context_t    tc;
     int                 opt_ch, verbose = 0, quiet = 0;
     const char          *config_filepath = configuration_filepath_default;
+    struct sigaction    signal_spec;
     log_queue_params_t  lq_params;
+    
+    /* Block all "other" permissions: */
+    umask(007);
     
     /* Parse all CLI arguments: */
     while ( (opt_ch = getopt_long(argc, argv, cli_options_str, cli_options, NULL)) != -1 ) {
@@ -446,9 +549,6 @@ main(
             case 'c':
                 config_filepath = optarg;
                 break;
-            case 'm':
-                should_create_fifo = true;
-                break;
         }
     }
     
@@ -456,10 +556,10 @@ main(
     logging_set_level(logging_get_level() + verbose - quiet);
     
     /* Load configuration: */
-    if ( ! config_read_yaml_file(config_filepath) ) exit(EINVAL);
+    if ( ! config_read_yaml_file(config_filepath, &tc.db) ) exit(EINVAL);
     
     /* Validate configuration: */
-    if ( ! config_validate() ) exit(EINVAL);
+    if ( ! config_validate(tc.db) ) exit(EINVAL);
     
     /* Initialize the log queue parameters: */
     lq_params.records.min = log_pool_records_min;
@@ -472,18 +572,40 @@ main(
     lq_params.push_wait_seconds.grow_threshold = log_pool_push_wait_seconds_dt_thresh;
     
     /* Create the log queue: */
-    tc.lq = log_queue_create(&lq_params);
-    tc.db = event_db;
-    
-    /* Spawn the database consumer thread: */
-    pthread_create(&db_thread, NULL, db_thread_entry, (void*)&tc);
-    
-    /* Spawn the event consumer thread: */
-    pthread_create(&event_thread, NULL, event_thread_entry, (void*)&tc);
-    
-    /* Wait for termination: */
-    pthread_join(db_thread, NULL);
-    pthread_join(event_thread, NULL);
+    if ( (tc.lq = log_queue_create(&lq_params)) == NULL ) {
+        ERROR("Unable to create log queue");
+    } else {
+        /* Register signal handlers: */
+        signal_spec.sa_handler = handle_termination;
+        sigemptyset(&signal_spec.sa_mask);
+        signal_spec.sa_flags = 0;
+        sigaction(SIGHUP, &signal_spec, NULL);
+        sigaction(SIGINT, &signal_spec, NULL);
+        sigaction(SIGTERM, &signal_spec, NULL);
+        
+        /* Spawn the database consumer thread: */
+        pthread_create(&db_thread, NULL, db_thread_entry, (void*)&tc);
+        
+        /* Spawn the event consumer thread: */
+        pthread_create(&event_thread, NULL, event_thread_entry, (void*)&tc);
+        
+        /* Spawn the shutdown thread: */
+        pthread_create(&shutdown_thread, NULL, shutdown_thread_entry, (void*)&tc);
+        
+        /* Wait for termination: */
+        pthread_join(db_thread, NULL);
+        pthread_join(event_thread, NULL);
+        pthread_join(shutdown_thread, NULL);
+        
+        if ( unlink(socket_filepath) < 0 ) {
+            ERROR("Failed to remove socket file %s (errno=%d)", socket_filepath, errno);
+        } else {
+            DEBUG("Removed socket file %s", socket_filepath);
+        }
+    }
+    db_dealloc(tc.db);
+    log_queue_destroy(&tc.lq);
+    DEBUG("Terminating.");
     
     return 0;
 }

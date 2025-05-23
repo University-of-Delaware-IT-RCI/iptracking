@@ -10,21 +10,23 @@
 #include "log_queue.h"
 
 #include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 //
 
-#define FIFO_TIMEOUT_DEFAULT   5   /* seconds */
+#define SOCKET_TIMEOUT_DEFAULT   5   /* seconds */
 
 //
 
 static struct option cli_options[] = {
                    { "help",    no_argument,       0,  'h' },
                    { "version", no_argument,       0,  'V' },
-                   { "fifo",    required_argument, 0,  'p' },
+                   { "socket",  required_argument, 0,  's' },
                    { "timeout", required_argument, 0,  't' },
                    { NULL,      0,                 0,   0  }
                };
-static const char *cli_options_str = "hVp:t:";
+static const char *cli_options_str = "hVs:t:";
 
 //
 
@@ -39,22 +41,22 @@ usage(
         "  options:\n\n"
         "    -h/--help                  Show this information\n"
         "    -V/--version               Display program version\n"
-        "    -p/--fifo <path>           Path to the fifo the daemon is monitoring\n"
+        "    -s/--socket <path>         Path to the socket file the daemon is monitoring\n"
         "                               (default %s)\n"
-        "    -t/--timeout <int>         Timeout in seconds for open and write to the named pipe\n"
+        "    -t/--timeout <int>         Timeout in seconds for sending data via the socket file\n"
         "                               (default %d)\n"
         "\n"
         "(v" IPTRACKING_VERSION_STR " built with " CC_VENDOR " %lu on " __DATE__ " " __TIME__ ")\n",
         exe,
-        FIFO_FILEPATH_DEFAULT,
-        FIFO_TIMEOUT_DEFAULT,
+        SOCKET_FILEPATH_DEFAULT,
+        SOCKET_TIMEOUT_DEFAULT,
         (unsigned long)CC_VERSION);
 }
 
 //
 
 void
-fifo_timeout_handler(
+socket_timeout_handler(
     int     signum
 )
 {
@@ -73,27 +75,26 @@ main(
     char* const*    argv
 )
 {
-    int                 rc = 0, fifo_fd, opt_ch;
+    int                 rc = 0, client_fd, opt_ch;
     size_t              bytes_ready;
+    struct sockaddr_un  server_addr;
     
-    const char          *fifo_filepath = FIFO_FILEPATH_DEFAULT;
-    int                 fifo_timeout = FIFO_TIMEOUT_DEFAULT;
+    const char          *socket_filepath = SOCKET_FILEPATH_DEFAULT;
+    int                 socket_timeout = SOCKET_TIMEOUT_DEFAULT;
     
     const char          *pam_type = getenv("PAM_TYPE");
-    log_event_t         event;
-    
     const char          *pam_user = getenv("PAM_USER");
     
     time_t              now_t;
     struct tm           now_tm;
-    char                now_s[24];
     
     const char          *ssh_connection = getenv("SSH_CONNECTION");
-    const char          *ssh_connection_field_start[3],
-                        *ssh_connection_field_end[3];
+
+    log_data_t          data_buffer, *data_buffer_ptr = &data_buffer;
+    size_t              data_buffer_len = sizeof(data_buffer);
     
-    char                out_buffer[1024], *out_buffer_p = out_buffer,
-                                          *out_buffer_e = out_buffer_p + sizeof(out_buffer);
+    /* Block all "other" permissions: */
+    umask(007);
     
     /* Parse all CLI arguments: */
     while ( (opt_ch = getopt_long(argc, argv, cli_options_str, cli_options, NULL)) != -1 ) {
@@ -104,8 +105,8 @@ main(
             case 'V':
                 printf(IPTRACKING_VERSION_STR "\n");
                 exit(0);
-            case 'p':
-                fifo_filepath = optarg;
+            case 's':
+                socket_filepath = optarg;
                 break;
             case 't': {
                 char    *endptr;
@@ -114,7 +115,7 @@ main(
                 if ( endptr > optarg ) {
                     if ( i < 0 ) i = 0;
                     else if ( i > INT_MAX ) i = INT_MAX;
-                    fifo_timeout = i;
+                    socket_timeout = i;
                 } else {
                     fprintf(stderr, "ERROR: invalid timeout: %s\n", optarg);
                     exit(100);
@@ -124,97 +125,111 @@ main(
         }
     }
     
-    /* We must have gotten values for all fields: */
-    if ( !(pam_type && *pam_type) ) exit(101);
-    if ( !(ssh_connection && *ssh_connection) ) {
-        ssh_connection = getenv("PAM_RHOST");
-        if ( !(ssh_connection && *ssh_connection) ) exit(102);
-        rc = snprintf(out_buffer_p, out_buffer_e - out_buffer_p, "0.0.0.0,%s,0,", ssh_connection);
-        if ( rc <= 0 ) exit(109);
-        out_buffer_p += rc;
-        rc = 0;
-    } else {
-        /* Isolate the ssh connection string fields: */
-        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
-        if ( !(*ssh_connection) ) exit(103);
-        ssh_connection_field_start[1] = ssh_connection;
-        while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
-        ssh_connection_field_end[1] = ssh_connection;
-        
-        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
-        if ( !(*ssh_connection) ) exit(104);
-        ssh_connection_field_start[2] = ssh_connection;
-        while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
-        ssh_connection_field_end[2] = ssh_connection;
-        
-        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
-        if ( !(*ssh_connection) ) exit(105);
-        ssh_connection_field_start[0] = ssh_connection;
-        while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++;
-        ssh_connection_field_end[0] = ssh_connection;
-
-        /* Enough room for the value and a comma? */
-        if ( (ssh_connection_field_end[0] - ssh_connection_field_start[0]) >= (2 + out_buffer_e - out_buffer_p) ) exit(106);
+    /* Valid socket filename length: */
+    opt_ch = strlen(socket_filepath);
+    if ( opt_ch >= sizeof(server_addr.sun_path) ) exit(100);
     
-        memcpy(out_buffer_p, ssh_connection_field_start[0], ssh_connection_field_end[0] - ssh_connection_field_start[0]);
-        out_buffer_p += ssh_connection_field_end[0] - ssh_connection_field_start[0];
-        *out_buffer_p++ = ',';
-        
-        /* Enough room for the value and a comma? */
-        if ( (ssh_connection_field_end[1] - ssh_connection_field_start[1]) >= (2 + out_buffer_e - out_buffer_p) ) exit(107);
-    
-        memcpy(out_buffer_p, ssh_connection_field_start[1], ssh_connection_field_end[1] - ssh_connection_field_start[1]);
-        out_buffer_p += ssh_connection_field_end[1] - ssh_connection_field_start[1];
-        *out_buffer_p++ = ',';
-        
-        /* Enough room for the value and a comma? */
-        if ( (ssh_connection_field_end[1] - ssh_connection_field_start[1]) >= (2 + out_buffer_e - out_buffer_p) ) exit(108);
-    
-        memcpy(out_buffer_p, ssh_connection_field_start[2], ssh_connection_field_end[2] - ssh_connection_field_start[2]);
-        out_buffer_p += ssh_connection_field_end[2] - ssh_connection_field_start[2];
-        *out_buffer_p++ = ',';
-    }
-        
-    /* If the user is empty that implies either an empty uid or a key-based auth: */
-    if ( !(pam_user && *pam_user) ) pam_user = "<<EMPTY>>";
-    
-    /* Resolve the event name to an id: */
-    event = log_event_parse_str(pam_type);
+    /* NUL-out the entire data structure: */
+    memset(data_buffer_ptr, 0, data_buffer_len);
 
     /* Get the timestamp ready: */
     now_t = time(NULL);
     localtime_r(&now_t, &now_tm);
-    strftime(now_s, sizeof(now_s), "%Y-%m-%d %H:%M:%S", &now_tm);
+    strftime(data_buffer.log_date, sizeof(data_buffer.log_date), "%Y-%m-%d %H:%M:%S", &now_tm);
     
-    /* Add the event id, uid, and timestamp: */
-    rc = snprintf(out_buffer_p, out_buffer_e - out_buffer_p, "%d,%s,%s", event, pam_user, now_s);
-    if ( rc <= 0 ) exit(109);
-    out_buffer_p += rc;
-    rc = 0;
+    /* We must have gotten values for all fields: */
+    if ( !(pam_type && *pam_type) ) exit(101);
+    data_buffer.event = log_event_parse_str(pam_type);
+    
+    /* If the user is empty just use a sentinel value: */
+    strncpy(data_buffer.uid, 
+                (pam_user && *pam_user) ? pam_user : "<<EMPTY>>",
+                sizeof(data_buffer.uid));
+                
+    if ( !(ssh_connection && *ssh_connection) ) {
+        ssh_connection = getenv("PAM_RHOST");
+        if ( !(ssh_connection && *ssh_connection) ) exit(102);
+        if ( strlen(ssh_connection) >= sizeof(data_buffer.src_ipaddr) ) exit(103);
+        strncpy(data_buffer.src_ipaddr, ssh_connection, sizeof(data_buffer.src_ipaddr));
+        strncpy(data_buffer.dst_ipaddr, "0.0.0.0", sizeof(data_buffer.dst_ipaddr));
+        data_buffer.src_port = 0;
+    } else {
+        const char  *p;
+        uint16_t    port_val = 0, prev_port_val = 0;
+        int         p_len;
+        
+        /* Isolate the ssh connection string fields */
+        
+        /* src_ipaddr */
+        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
+        p = ssh_connection, p_len = 0;
+        while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++, p_len++;
+        if ( (p_len == 0) || (p_len >= sizeof(data_buffer.src_ipaddr)) ) exit(104);
+        memcpy(data_buffer.src_ipaddr, p, p_len);
+        
+        /* src_port */
+        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
+        while ( *ssh_connection && isdigit(*ssh_connection) ) {
+            port_val = port_val * 10 + (*ssh_connection++ - '0');
+            if ( port_val < prev_port_val ) exit(105);
+        }
+        if ( !(*ssh_connection) || ! isspace(*ssh_connection) ) exit(106);
+        data_buffer.src_port = port_val;
+        
+        /* dst_ipaddr */
+        while ( *ssh_connection && isspace(*ssh_connection) ) ssh_connection++;
+        p = ssh_connection, p_len = 0;
+        while ( *ssh_connection && ! isspace(*ssh_connection) ) ssh_connection++, p_len++;
+        if ( (p_len == 0) || (p_len >= sizeof(data_buffer.dst_ipaddr)) ) exit(107);
+        memcpy(data_buffer.dst_ipaddr, p, p_len);
+    }
+    
+    /* Open the socket: */
+    if ( (client_fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) exit(108);
+    
+    /* Setup the address: */
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sun_family = AF_UNIX;
+    strncpy(server_addr.sun_path, socket_filepath, sizeof(server_addr.sun_path));
     
     /* Set the timeout alarm: */
-    alarm(0);
-    signal(SIGALRM, fifo_timeout_handler);
-    alarm(fifo_timeout);
-    
-    /* Open the fifo for writing: */
-    fifo_fd = open(fifo_filepath, O_WRONLY);
-    if ( fifo_fd < 0 ) exit(110);
-    
-    bytes_ready = out_buffer_p - out_buffer;
-    out_buffer_p = out_buffer;
-    while ( bytes_ready > 0 ) {
-        ssize_t bytes_written = write(fifo_fd, out_buffer_p, bytes_ready);
-        
-        if ( bytes_written < 0 ) {
-            if ( errno != EAGAIN ) exit(111);
-        } else if ( bytes_written > 0 ) {
-            bytes_ready -= bytes_written;
-            out_buffer_p += bytes_written;
+    if ( socket_timeout > 0 ) {
+        alarm(0);
+        signal(SIGALRM, socket_timeout_handler);
+        alarm(socket_timeout);
+    }
+    while ( data_buffer_len > 0 ) {
+        if ( connect(client_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) >= 0 ) {
+            bool        is_connected = true;
+            
+            while ( is_connected && (data_buffer_len > 0) ) {
+                ssize_t     nbytes = send(client_fd, data_buffer_ptr, data_buffer_len, 0);
+                
+                if ( nbytes < 0 ) {
+                    switch ( errno ) {
+                        case EINTR:
+                        case ENOBUFS:
+                            /* Just try again */
+                            break;
+                        case ECONNRESET:
+                            /* Reset and send all over again: */
+                            data_buffer_ptr = &data_buffer;
+                            data_buffer_len = sizeof(data_buffer);
+                            is_connected = false;
+                            break;
+                        default:
+                            fprintf(stderr, "(%d) %s\n", errno, strerror(errno));
+                            exit(109);
+                    }
+                } else if ( nbytes > 0 ) {
+                    data_buffer_ptr += nbytes;
+                    data_buffer_len -= nbytes;
+                }
+            }
         }
     }
-    close(fifo_fd);
-    alarm(0);
+    if ( socket_timeout > 0 ) alarm(0);
+    close(client_fd);
     
     return 0;
 }

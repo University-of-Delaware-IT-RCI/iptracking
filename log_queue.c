@@ -7,6 +7,22 @@
  */
 
 #include "log_queue.h"
+#include "chartest.h"
+
+//
+
+bool
+log_data_is_valid(
+    log_data_t  *data
+)
+{
+    return ( data &&
+         (data->event >= log_event_unknown && data->event < log_event_max) &&
+         (data->dst_ipaddr[0] && memchr(data->dst_ipaddr, 0, sizeof(data->dst_ipaddr))) &&
+         (data->src_ipaddr[0] && memchr(data->src_ipaddr, 0, sizeof(data->src_ipaddr)) ) &&
+         (data->uid[0] && memchr(data->uid, 0, sizeof(data->uid))) &&
+         (data->log_date[0] && memchr(data->log_date, 0, sizeof(data->log_date))) );
+}
 
 //
 
@@ -26,18 +42,50 @@ static log_queue_params_t __log_queue_default_params = {
 
 //
 
+static bool
+__digit_chartest_callback(int c) { return (isdigit(c) != 0) ? true : false; }
+static bool
+__dash_chartest_callback(int c) { return (c == '-') ? true : false; }
+static bool
+__colon_chartest_callback(int c) { return (c == ':') ? true : false; }
+static bool
+__space_chartest_callback(int c) { return (c == ' ') ? true : false; }
+
+static chartest_sequence_t __datestr_chartest = {
+            .n_chunks = 11,
+            .chunks = {
+                { .n_char = 4, .chartest_callback = __digit_chartest_callback },
+                { .n_char = 1, .chartest_callback = __dash_chartest_callback },
+                { .n_char = 2, .chartest_callback = __digit_chartest_callback },
+                { .n_char = 1, .chartest_callback = __dash_chartest_callback },
+                { .n_char = 2, .chartest_callback = __digit_chartest_callback },
+                { .n_char = 1, .chartest_callback = __space_chartest_callback },
+                { .n_char = 2, .chartest_callback = __digit_chartest_callback },
+                { .n_char = 1, .chartest_callback = __colon_chartest_callback },
+                { .n_char = 2, .chartest_callback = __digit_chartest_callback },
+                { .n_char = 1, .chartest_callback = __colon_chartest_callback },
+                { .n_char = 2, .chartest_callback = __digit_chartest_callback },
+            }
+        };
+
 bool
 log_data_parse(
     log_data_t  *data,
     const char  *p,
-    size_t      p_len
+    size_t      p_len,
+    const char  **endptr
 )
 {
     memset(data, 0, sizeof(log_data_t));
     while ( p && p_len ) {
         /* [dst_ipaddr],[src_ipddr],[src_port],[event],[uid],[log_date] */
-        const char  *e = p;
+        const char  *e;
         uint32_t    last_val;
+        
+        /* Drop any leading whitespace: */
+        while ( p_len && *p && isspace(*p) ) p++, p_len--;
+        if ( ! p_len || ! *p ) break;
+        e = p; /* p = start of the string */
         
         /* dst_ipaddr */
         while ( p_len && *e && (*e != ',') ) e++, p_len--;
@@ -92,8 +140,11 @@ log_data_parse(
         
         /* timestamp */
         if ( p_len == 0 ) break;
-        if ( p_len + 1 > sizeof(data->log_date) ) break;
-        memcpy(&data->log_date[0], p, p_len); data->log_date[p_len] = '\0';
+        if ( ! chartest(&__datestr_chartest, p, p_len, &e) ) break;
+        if ( e - p + 1 > sizeof(data->log_date) ) break;
+        memcpy(&data->log_date[0], p, (e - p)); data->log_date[e - p] = '\0';
+        
+        if ( endptr ) *endptr = e;
         
         return true;
     }
@@ -396,4 +447,16 @@ log_queue_pop(
     }
     pthread_mutex_unlock(&(*lq)->lock);
     return rc;
+}
+
+//
+
+void
+log_queue_interrupt_pop(
+    log_queue_ref   *lq
+)
+{
+    pthread_mutex_lock(&(*lq)->lock);
+    pthread_cond_broadcast(&(*lq)->data_ready);
+    pthread_mutex_unlock(&(*lq)->lock);
 }

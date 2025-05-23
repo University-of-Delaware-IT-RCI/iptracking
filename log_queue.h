@@ -123,17 +123,28 @@ typedef struct log_data {
 #endif
 
 /*!
+ * @function log_data_is_valid
+ *
+ * Checks the content of <data> to ensure all fields are properly
+ * filled-in.  Returns true if so, false otherwise.
+ */
+bool log_data_is_valid(log_data_t *data);
+
+/*!
  * @function log_data_parse
  *
  * Fill=in the <data> record with information from <p_len> bytes in
  * character buffer <p>.  Returns true if the data could be parsed,
  * false otherwise.
  *
+ * If parsing is successful and <endptr> is not NULL, *<endptr> is
+ * set to the character position directly following the parsed data.
+ *
  * A parsable event string looks like:
  *
  *     [dst_ipaddr],[src_ipddr],[src_port],[event],[uid],[log_date]
  */
-bool log_data_parse(log_data_t *data, const char *p, size_t p_len);
+bool log_data_parse(log_data_t *data, const char *p, size_t p_len, const char  **endptr);
 
 /*!
  * @function log_data_parse_cstr
@@ -141,9 +152,9 @@ bool log_data_parse(log_data_t *data, const char *p, size_t p_len);
  * Convenience function that 
  */
 static inline
-bool log_data_parse_cstr(log_data_t *data, const char *cstr)
+bool log_data_parse_cstr(log_data_t *data, const char *cstr, const char  **endptr)
 {
-    return log_data_parse(data, cstr, strlen(cstr));
+    return log_data_parse(data, cstr, strlen(cstr), endptr);
 }
 
 /*!
@@ -207,5 +218,12 @@ bool log_queue_push(log_queue_ref *lq, log_data_t *data);
  * false otherwise.
  */
 bool log_queue_pop(log_queue_ref *lq, log_data_t *data);
+
+/*!
+ * @function log_queue_interrupt_pop
+ *
+ * Used to interrupt the log_queue_pop() function.
+ */
+void log_queue_interrupt_pop(log_queue_ref *lq);
 
 #endif /* __LOG_QUEUE_H__ */

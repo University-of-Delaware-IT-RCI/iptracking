@@ -65,10 +65,10 @@ set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT_THRESH "4" CACHE STRING "Number of fai
 set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT "5" CACHE STRING "Seconds to increase wait time after threshold")
 
 #
-# Path to the named pipe that the daemon will monitor and to which the callback program
+# Path to the socket file that the daemon will monitor and to which the callback program
 # will write events:
 #
-set(FIFO_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_RUNSTATEDIR}/iptracking.fifo" CACHE PATH "Default named pipe path")
+set(SOCKET_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_RUNSTATEDIR}/iptracking.s" CACHE PATH "Default socket path")
 
 #
 # Find a threading package -- we demand pthreads!
@@ -134,6 +134,7 @@ configure_file(iptracking-daemon.service.in iptracking-daemon.service)
 # database.
 #
 add_executable(iptracking-daemon
+        chartest.c
         logging.c
         log_queue.c
         yaml_helpers.c

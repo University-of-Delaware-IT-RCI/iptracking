@@ -4,7 +4,7 @@ PAM and SSH services on a Linux system typically log authentication and session 
 
 In the former scheme there is a significant delay between the occurrence of events and their availability for analysis.  In the latter, access to the data for the sake of analysis may not be as flexible or even permissible.  Near real-time reaction to events is best implemented on the system itself, and the fastest path to extracting meaning from the events is to place them in a queryable database as they occur.
 
-This project uses the PAM `pg_exec.so` service to execute an external program with user authorization information.  That program writes the data to a named pipe which is monitored by a daemon that logs the event to a database.
+This project uses the PAM `pg_exec.so` service to execute an external program with user authorization information.  That program writes the data to a socket file which is monitored by a daemon that logs the event to a database.
 
 ## Database 
 
@@ -177,11 +177,11 @@ The package includes CMake build infrastructure.  The following non-standard opt
 | Option | Default | Description |
 | ------ | ------- | ----------- |
 | `CONFIGURATION_FILEPATH_DEFAULT` | `<install-prefix>/etc/iptracking.yml` | The location of the daemon's YAML configuration file. |
-| `FIFO_FILEPATH_DEFAULT` | `<install-prefix>/var/run/iptracking.fifo` | The location of the named pipe the daemon will read from (and the `pam_exec.so` program will write to) |
+| `SOCKET_FILEPATH_DEFAULT` | `<install-prefix>/var/run/iptracking.s` | The location of the socket file the daemon will read from (and the `pam_exec.so` program will write to) |
 | `SHOULD_INSTALL_CONFIG_TEMPLATE` | Off | If on, the `iptracking.yml` file generated during build will be installed during `make install` |
 | `SHOULD_INSTALL_SYSTEMD_SERVICE` | Off | If on, the `iptracking-daemon.service` file generated during build will be installed during `make install` |
 
-Logged events are read from the named pipe and added to an in-memory queue to be sent to the database.  The number of available records can vary according to these parameters:
+Logged events are read from the socket file and added to an in-memory queue to be sent to the database.  The number of available records can vary according to these parameters:
 
 | Option | Default | Description |
 | ------ | ------- | ----------- |
@@ -189,7 +189,7 @@ Logged events are read from the named pipe and added to an in-memory queue to be
 | `LOG_POOL_RECORDS_MAX` | 0 | Allocate *at most* this many log pool records to hold events as they are read (zero implies no limit) |
 | `LOG_POOL_RECORDS_DELTA` | 32 | Allocate additional records in batches of this many (each record is 128 bytes, times 32 = 4 KiB) |
 
-When logged events are read from the named pipe, a record must be allocated from the pool to hold the data.  If the pool has reached its record limit and none are available, the process must wait for a record to become available.  Each time this happens the program starts by waiting a base amount of time for some number of tries, then increases the wait time by a fixed value on each subsequent try:
+When logged events are read from the socket file, a record must be allocated from the pool to hold the data.  If the pool has reached its record limit and none are available, the process must wait for a record to become available.  Each time this happens the program starts by waiting a base amount of time for some number of tries, then increases the wait time by a fixed value on each subsequent try:
 
 | Option | Default | Description |
 | ------ | ------- | ----------- |
@@ -215,7 +215,7 @@ The CMake infrastructure will look for a pthreads library; a libyaml library; an
 
 To influence the locating of the libyaml library, the `libyaml_ROOT` variable can be set to the installation prefix of the library.  Likewise, discovery of the PostgreSQL library can be influenced by setting `PostgreSQL_ROOT`.
 
-Unlike most CMake projects, the `CMAKE_INSTALL_PREFIX` will default to the root directory, not `/usr/local`.  This will place the YAML configuration file in `/etc/iptracking.yml`, the named pipe at `/var/run/iptracking.fifo`, and the executables in `/usr/sbin`.
+Unlike most CMake projects, the `CMAKE_INSTALL_PREFIX` will default to the root directory, not `/usr/local`.  This will place the YAML configuration file in `/etc/iptracking.yml`, the socket file at `/var/run/iptracking.s`, and the executables in `/usr/sbin`.
 
 As an example, consider the `cmake` command used to generate the build system on our Caviness cluster:
 
@@ -227,7 +227,7 @@ $ cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release \
     -DENABLE_POSTGRESQL_DRIVER=On -DPostgreSQL_ROOT="$POSTGRESQL_PREFIX" \
     -DENABLE_SQLITE3_DRIVER=On -DSQLite3_ROOT="$SQLITE3_PREFIX" \
     -DSHOULD_INSTALL_SYSTEMD_SERVICE=On \
-    -DFIFO_FILEPATH_DEFAULT=/var/run/iptracking.fifo \
+    -DSOCKET_FILEPATH_DEFAULT=/var/run/iptracking.s \
     ..
 ```
 
@@ -258,7 +258,7 @@ $ sudo systemctl enable iptracking-daemon.service
 
 ## PAM configuration
 
-The `pam_exec.so` module executes a program (e.g. a script) with the connection information present in the environment.  That program is responsible for writing the connection information to the named pipe that the `iptracking-daemon` is monitoring.  The events logged correspond with the management group type(s) under which the `pam_exec.so` module and program are registered:
+The `pam_exec.so` module executes a program (e.g. a script) with the connection information present in the environment.  That program is responsible for writing the connection information to the socket file that the `iptracking-daemon` is monitoring.  The events logged correspond with the management group type(s) under which the `pam_exec.so` module and program are registered:
 
 ```
 #%PAM-1.0
@@ -302,9 +302,9 @@ usage:
 
     -h/--help                  Show this information
     -V/--version               Display program version
-    -p/--fifo <path>           Path to the fifo the daemon is monitoring
-                               (default /var/run/iptracking.fifo)
-    -t/--timeout <int>         Timeout in seconds for open and write to the named pipe
+    -s/--socket <path>         Path to the socket file the daemon is monitoring
+                               (default /var/run/iptracking.s)
+    -t/--timeout <int>         Timeout in seconds for open and write to the socket file
                                (default 5)
 
 (v0.0.1 built with GNU 40805 on May 21 2025 16:25:32)
@@ -320,9 +320,9 @@ The configuration is a YAML-formatted file.  Each top-level key in the document 
 
 The `database` key is associated with a mapping of key-value pairs associated with a database driver.  See the **Database** section at the top of this document for more information on this mapping.
 
-### fifo-file
+### socket-file
 
-The `fifo-file` key is associated with a string containing the path to the named pipe that the daemon will monitor and to which the PAM helper will write event data.
+The `socket-file` key is associated with a string containing the path to the socket file that the daemon will monitor and to which the PAM helper will write event data.
 
 If omitted, the compiled-in default will be used.
 
