@@ -71,6 +71,12 @@ set(LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT "5" CACHE STRING "Seconds to increase 
 set(SOCKET_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_RUNSTATEDIR}/iptracking.s" CACHE PATH "Default socket path")
 
 #
+# Socket API tunables:
+#
+set(SOCKET_DEFAULT_BACKLOG "5" CACHE STRING "Socket listen connection backlog (see 'man 3 listen')")
+set(SOCKET_DEFAULT_POLL_INTERVAL "90" CACHE STRING "Socket connection-polling timeout in seconds (see 'man 3 poll')")
+
+#
 # Find a threading package -- we demand pthreads!
 #
 set(THREADS_PREFER_PTHREAD_FLAG ON)

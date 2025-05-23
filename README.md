@@ -178,6 +178,8 @@ The package includes CMake build infrastructure.  The following non-standard opt
 | ------ | ------- | ----------- |
 | `CONFIGURATION_FILEPATH_DEFAULT` | `<install-prefix>/etc/iptracking.yml` | The location of the daemon's YAML configuration file. |
 | `SOCKET_FILEPATH_DEFAULT` | `<install-prefix>/var/run/iptracking.s` | The location of the socket file the daemon will read from (and the `pam_exec.so` program will write to) |
+| `SOCKET_DEFAULT_BACKLOG` | 5 | The connection backlog for the socket listen function (see 'man 3 listen') |
+| `SOCKET_DEFAULT_POLL_INTERVAL` | 90 | The number of seconds the socket-polling call will block (see 'man 3 poll') |
 | `SHOULD_INSTALL_CONFIG_TEMPLATE` | Off | If on, the `iptracking.yml` file generated during build will be installed during `make install` |
 | `SHOULD_INSTALL_SYSTEMD_SERVICE` | Off | If on, the `iptracking-daemon.service` file generated during build will be installed during `make install` |
 

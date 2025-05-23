@@ -38,6 +38,8 @@ static int log_pool_push_wait_seconds_dt = LOG_POOL_DEFAULT_PUSH_WAIT_SECONDS_DT
 
 static bool is_running = true;
 static const char *socket_filepath = SOCKET_FILEPATH_DEFAULT;
+static int socket_backlog = SOCKET_DEFAULT_BACKLOG;
+static int socket_poll_interval = SOCKET_DEFAULT_POLL_INTERVAL;
 
 //
 
@@ -156,7 +158,7 @@ event_thread_entry(
         DEBUG("Event reader: socket %d bound to %s", server_fd, socket_filepath);
         
         /* Start listening for connections: */
-        if ( listen(server_fd, 5) == -1 ) {
+        if ( listen(server_fd, socket_backlog) == -1 ) {
             ERROR("Event reader: unable to listen on Unix socket (errno=%d)", errno);
             close(server_fd);
             sleep(5);
@@ -173,7 +175,7 @@ event_thread_entry(
             server_fds.fd = server_fd;
             server_fds.events = POLLIN;
             while ( is_running && is_polling ) {
-                switch ( poll(&server_fds, 1, 30) ) {
+                switch ( poll(&server_fds, 1, socket_poll_interval) ) {
                     case -1: {
                         switch ( errno ) {
                             case EINTR:
@@ -417,6 +419,8 @@ config_validate(
     }
     
     INFO("                                socket-file = %s", socket_filepath);
+    INFO("                                    backlog = %d", socket_backlog);
+    INFO("                           polling-interval = %d", socket_poll_interval);
     
     INFO("                       log-pool.records.min = %lu", log_pool_records_min);
     INFO("                       log-pool.records.max = %lu", log_pool_records_max);
@@ -435,14 +439,16 @@ config_validate(
 //
 
 static struct option cli_options[] = {
-                   { "help",    no_argument,       0,  'h' },
-                   { "version", no_argument,       0,  'V' },
-                   { "verbose", no_argument,       0,  'v' },
-                   { "quiet",   no_argument,       0,  'q' },
-                   { "config",  required_argument, 0,  'c' },
-                   { NULL,      0,                 0,   0  }
+                   { "help",            no_argument,       0,  'h' },
+                   { "version",         no_argument,       0,  'V' },
+                   { "verbose",         no_argument,       0,  'v' },
+                   { "quiet",           no_argument,       0,  'q' },
+                   { "config",          required_argument, 0,  'c' },
+                   { "backlog",         required_argument, 0,  'b' },
+                   { "poll-interval",   required_argument, 0,  'i' },
+                   { NULL,              0,                 0,   0  }
                };
-static const char *cli_options_str = "hVvqc:";
+static const char *cli_options_str = "hVvqc:b:i:";
 
 //
 
@@ -464,6 +470,10 @@ usage(
         "    -q/--quiet                 Decrease level of printing\n"
         "    -c/--config <filepath>     Read configuration directives from the YAML file\n"
         "                               at <filepath> (default: %s)\n"
+        "    -b/--backlog <int>         The socket listen backlog (see 'man 3 listen)\n"
+        "                               (default: %d, maximum: %d)\n"
+        "    -i/--poll-interval <int>   The number of seconds the daemon will block waiting\n"
+        "                               on socket connections (default: %d)\n"
         "\n"
         "  defaults:\n\n"
         "    - will read events from socket file %s\n"
@@ -471,6 +481,9 @@ usage(
         "  database drivers:\n\n",
         exe,
         configuration_filepath_default,
+        socket_backlog,
+        (int)SOMAXCONN,
+        socket_poll_interval,
         socket_filepath);
     while ( (driver_name = db_driver_enumerate_drivers(&driver_iter)) ) printf("    - %s\n", driver_name);
     printf(
@@ -541,19 +554,40 @@ main(
                 printf(IPTRACKING_VERSION_STR "\n");
                 exit(0);
             case 'v':
-                verbose++;
+                /* Set logging level based on verbose/quiet options: */
+                logging_set_level(logging_get_level() + ++verbose - quiet);
                 break;
             case 'q':
-                quiet++;
+                /* Set logging level based on verbose/quiet options: */
+                logging_set_level(logging_get_level() + verbose - ++quiet);
                 break;
             case 'c':
                 config_filepath = optarg;
                 break;
+            case 'b': {
+                char    *endptr;
+                long    ival = strtol(optarg, &endptr, 0);
+                
+                if ( (endptr == optarg) || (ival < 0) || (ival > SOMAXCONN) ) {
+                    ERROR("Invalid backlog value: %s", optarg);
+                    exit(EINVAL);
+                }
+                socket_backlog = ival;
+                break;
+            }
+            case 'i': {
+                char    *endptr;
+                long    ival = strtol(optarg, &endptr, 0);
+                
+                if ( (endptr == optarg) || (ival < 0) || (ival > INT_MAX) ) {
+                    ERROR("Invalid polling interval value: %s", optarg);
+                    exit(EINVAL);
+                }
+                socket_poll_interval = ival;
+                break;
+            }
         }
     }
-    
-    /* Set logging level based on verbose/quiet options: */
-    logging_set_level(logging_get_level() + verbose - quiet);
     
     /* Load configuration: */
     if ( ! config_read_yaml_file(config_filepath, &tc.db) ) exit(EINVAL);
