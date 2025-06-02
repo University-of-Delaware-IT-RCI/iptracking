@@ -1,0 +1,10 @@
+channels:
+  - conda-forge
+dependencies:
+  - prettytable
+  - psycopg
+  - python>=3.13
+  - pip
+  - pip:
+      - ipwhois
+      - tld

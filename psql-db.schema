@@ -181,3 +181,21 @@ BEGIN
     END IF;
 END;
 $$ LANGUAGE plpgsql;
+
+--
+-- Supplementary helper table:  map day-of-week integer to string
+-- forms
+--
+CREATE TABLE dow_to_text(
+    dow_value       SMALLINT UNIQUE NOT NULL CHECK (dow_value >= 0 AND dow_value <= 6),
+    long_form       TEXT UNIQUE NOT NULL,
+    abbrev          TEXT UNIQUE NOT NULL
+);
+INSERT INTO dow_to_text VALUES
+    (0, 'Sunday', 'Sun'),
+    (1, 'Monday', 'Mon'),
+    (2, 'Tuesday', 'Tue'),
+    (3, 'Wednesday', 'Wed'),
+    (4, 'Thursday', 'Thu'),
+    (5, 'Friday', 'Fri'),
+    (6, 'Saturday', 'Sat');
