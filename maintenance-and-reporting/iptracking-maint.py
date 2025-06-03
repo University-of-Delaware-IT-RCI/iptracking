@@ -108,8 +108,9 @@ class DNSToOrg(object):
                 if whois_result:
                     rdap_result = whois_result.lookup_rdap()
                     if rdap_result:
-                        cache_record = { 'asn_cidr': rdap_result['asn_cidr'],
-                                         'asn_country_code': rdap_result['asn_country_code'] }
+                        cache_record = { 'asn_cidr': rdap_result.get('asn_cidr', ''),
+                                         'asn_country_code': rdap_result.get('asn_country_code', ''),
+                                         'asn_description': rdap_result.get('asn_description', '') }
                         self._cache[ipaddr] = cache_record
             except:
                 pass
@@ -216,20 +217,17 @@ SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per
             else:
                 results = []
                 headers = [c.name for c in db_cursor.description]
-                headers.extend(['org cidr', 'org country'])
+                headers.extend(['org cidr', 'org country', 'org descrip'])
                 #
                 # Try to substitute org CIDR and country code for each IP:
                 #
                 for result in db_cursor:
                     ip_info = dns_helper.ip_to_name(result[1].packed)
                     if ip_info:
-                        tld = ip_info['asn_cidr']
-                        fld = ip_info['asn_country_code']
+                        results.append([*result, ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
                     else:
-                        tld = ''
-                        fld = ''
-                    results.append([*result, tld, fld])
-                info_strs.append(results_to_text_table(results, headers, alignment={'event_count':'r', 'src_ipaddr':'l', 'unique_uids': 'r', 'period': 'r', 'avg_per_day': 'r', 'org cidr': 'r', 'org country': 'c' }))
+                        results.append([*result, '', '', ''])
+                info_strs.append(results_to_text_table(results, headers, alignment={'event_count':'r', 'src_ipaddr':'l', 'unique_uids': 'r', 'period': 'r', 'avg_per_day': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
         except Exception as E:
             info_strs.append(f'ERROR:  Failed to produce top IPs by event count: {E}')
         
@@ -344,20 +342,17 @@ SELECT uid, src_ipaddr,
             else:
                 results = []
                 headers = [c.name for c in db_cursor.description]
-                headers.extend(['org cidr', 'org country'])
+                headers.extend(['org cidr', 'org country', 'org descrip'])
                 #
                 # Try to substitute org CIDR and country code for each IP:
                 #
                 for result in db_cursor:
                     ip_info = dns_helper.ip_to_name(result[1].packed)
                     if ip_info:
-                        tld = ip_info['asn_cidr']
-                        fld = ip_info['asn_country_code']
+                        results.append([*result, ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
                     else:
-                        tld = ''
-                        fld = ''
-                    results.append([*result, tld, fld])
-                info_strs.append(results_to_text_table(results, headers, alignment={'uid':'l', 'src_ipaddr': 'l', 'live_sessions': 'r', 'total_events': 'r', 'org cidr': 'r', 'org country': 'c' }))
+                        results.append([*result, '', '', ''])
+                info_strs.append(results_to_text_table(results, headers, alignment={'uid':'l', 'src_ipaddr': 'l', 'live_sessions': 'r', 'total_events': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
         except Exception as E:
             info_strs.append(f'ERROR:  Failed to produce top (possibly) open sessions from foreign IPs: {E}')    
 
