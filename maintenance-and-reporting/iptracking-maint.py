@@ -158,19 +158,24 @@ class MessageBody():
             self._info_strs.append(s)
 
 
-def maintenance(db_cursor, cli_args, dns_helper):
+def pre_maintenance(db_cursor, cli_args, dns_helper):
     """Perform database maintenance:  remove logged events older than some time period."""
     #
     # Scrub older records:
     #
     if cli_args.should_do_maint:
         try:
-            info_strs.append('## Event removal')
-            query_str = f"""
-DELETE FROM inet_log
-    WHERE log_date < CURRENT_DATE - '{cli_args.purge_day_count} day'::INTERVAL"""
-            db_cursor.execute(query=query_str, prepare=False)
-            info_strs.append(f'Removed logged events older than {cli_args.purge_day_count} day(s): {db_cursor.rowcount} tuples')
+            info_strs.append('## Database cleanup (pre-reporting)')
+            #
+            # Since we are doing autocommit, we want to put this destructive query
+            # inside a transaction that we can rollback if necessary:
+            #
+            with db_cursor.connection.transaction(force_rollback=cli_args.is_dry_run):
+                query_str = f"""
+    DELETE FROM inet_log
+        WHERE log_date < CURRENT_DATE - '{cli_args.purge_day_count} day'::INTERVAL"""
+                db_cursor.execute(query=query_str, prepare=False)
+                info_strs.append(f'Removed logged events older than {cli_args.purge_day_count} day(s): {db_cursor.rowcount} tuples.')
         except Exception as E:
             info_strs.append(f'ERROR:  Failed to remove logged events older than {cli_args.purge_day_count} day(s): {E}')
 
@@ -183,14 +188,19 @@ def daily_event_count(db_cursor, cli_args, dns_helper):
     if cli_args.should_do_reports:
         try:
             info_strs.append('## Daily event counts')
-            query_str = f"""
-SELECT DATE_TRUNC('day', I.log_date)::DATE AS log_day, D.abbrev AS day_of_week, COUNT(*) AS event_count
-    FROM inet_log AS I
-    INNER JOIN dow_to_text AS D ON (EXTRACT(DOW FROM I.log_date) = D.dow_value)
-    GROUP BY log_day, day_of_week
-    ORDER BY log_day ASC"""
-            db_cursor.execute(query=query_str, prepare=False)
-            info_strs.append(cursor_to_text_table(db_cursor, alignment={'log_day':'l', 'day_of_week': 'c', 'event_count':'r'}))
+            #
+            # Force the query into a transaction that is ALWAYS rolled
+            # back to guard against any data change/loss:
+            #
+            with db_cursor.connection.transaction(force_rollback=True):
+                query_str = f"""
+    SELECT DATE_TRUNC('day', I.log_date)::DATE AS log_day, D.abbrev AS day_of_week, COUNT(*) AS event_count
+        FROM inet_log AS I
+        INNER JOIN dow_to_text AS D ON (EXTRACT(DOW FROM I.log_date) = D.dow_value)
+        GROUP BY log_day, day_of_week
+        ORDER BY log_day ASC"""
+                db_cursor.execute(query=query_str, prepare=False)
+                info_strs.append(cursor_to_text_table(db_cursor, alignment={'log_day':'l', 'day_of_week': 'c', 'event_count':'r'}))
         except Exception as E:
             info_strs.append(f'ERROR: Failed to produce daily event counts: {E}')
 
@@ -201,9 +211,15 @@ def top_counts(db_cursor, cli_args, dns_helper):
     # Top N by IP across all events:
     #
     if cli_args.should_do_reports:
+        #
+        # Force the query into a transaction that is ALWAYS rolled
+        # back to guard against any data change/loss:
+        #
         try:
-            info_strs.append('## Top IPs by event count')
-            query_str = f"""
+            with db_cursor.connection.transaction(force_rollback=True):
+                try:
+                    info_strs.append('## Top IPs by event count')
+                    query_str = f"""
 SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per_day FROM (
     SELECT COUNT(*) AS event_count, src_ipaddr, COUNT(DISTINCT uid) AS unique_uids, (MAX(log_date) - MIN(log_date)) AS period
         FROM inet_log
@@ -211,32 +227,32 @@ SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per
         ORDER BY event_count DESC
     ) WHERE event_count > 2500
     LIMIT {cli_args.top_N}"""
-            db_cursor.execute(query=query_str, prepare=False)
-            if db_cursor.rowcount <= 0:
-                info_strs.append('No matching data.')
-            else:
-                results = []
-                headers = [c.name for c in db_cursor.description]
-                headers.extend(['org cidr', 'org country', 'org descrip'])
-                #
-                # Try to substitute org CIDR and country code for each IP:
-                #
-                for result in db_cursor:
-                    ip_info = dns_helper.ip_to_name(result[1].packed)
-                    if ip_info:
-                        results.append([*result, ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
+                    db_cursor.execute(query=query_str, prepare=False)
+                    if db_cursor.rowcount <= 0:
+                        info_strs.append('No matching data.')
                     else:
-                        results.append([*result, '', '', ''])
-                info_strs.append(results_to_text_table(results, headers, alignment={'event_count':'r', 'src_ipaddr':'l', 'unique_uids': 'r', 'period': 'r', 'avg_per_day': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
-        except Exception as E:
-            info_strs.append(f'ERROR:  Failed to produce top IPs by event count: {E}')
-        
-        #
-        # Top N by uid across all events:
-        #
-        try:
-            info_strs.append('## Top UIDs by event count')
-            query_str = f"""
+                        results = []
+                        headers = [c.name for c in db_cursor.description]
+                        headers.extend(['org cidr', 'org country', 'org descrip'])
+                        #
+                        # Try to substitute org CIDR and country code for each IP:
+                        #
+                        for result in db_cursor:
+                            ip_info = dns_helper.ip_to_name(result[1].packed)
+                            if ip_info:
+                                results.append([*result, ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
+                            else:
+                                results.append([*result, '', '', ''])
+                        info_strs.append(results_to_text_table(results, headers, alignment={'event_count':'r', 'src_ipaddr':'l', 'unique_uids': 'r', 'period': 'r', 'avg_per_day': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
+                except Exception as E:
+                    info_strs.append(f'ERROR:  Failed to produce top IPs by event count: {E}')
+                
+                #
+                # Top N by uid across all events:
+                #
+                try:
+                    info_strs.append('## Top UIDs by event count')
+                    query_str = f"""
 SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per_day FROM (
     SELECT uid, COUNT(*) AS event_count, (MAX(log_date) - MIN(log_date)) AS period
         FROM inet_log
@@ -244,17 +260,17 @@ SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per
         ORDER BY event_count DESC
     ) WHERE event_count > 2500
     LIMIT {cli_args.top_N}"""
-            db_cursor.execute(query=query_str, prepare=False)
-            info_strs.append(cursor_to_text_table(db_cursor, alignment={'event_count':'r', 'uid':'l', 'period': 'r', 'avg_per_day': 'r' }))
-        except Exception as E:
-            info_strs.append(f'ERROR:  Failed to produce top uids by event count: {E}')
-            
-        #
-        # Top N by IP by session success rate:
-        #
-        try:
-            info_strs.append('## Top IPs by session success rate')
-            query_str = f"""
+                    db_cursor.execute(query=query_str, prepare=False)
+                    info_strs.append(cursor_to_text_table(db_cursor, alignment={'event_count':'r', 'uid':'l', 'period': 'r', 'avg_per_day': 'r' }))
+                except Exception as E:
+                    info_strs.append(f'ERROR:  Failed to produce top uids by event count: {E}')
+                    
+                #
+                # Top N by IP by session success rate:
+                #
+                try:
+                    info_strs.append('## Top IPs by session success rate')
+                    query_str = f"""
 SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, * FROM (
     SELECT COUNT(CASE WHEN log_event='open_session' THEN 1 END) AS session_count,
             COUNT(CASE WHEN log_event='auth' THEN 1 END) AS auth_count,
@@ -265,30 +281,30 @@ SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, *
         WHERE success_ratio < {cli_args.success_ratio_threshold}
         ORDER BY success_ratio ASC
         LIMIT {cli_args.top_N}"""
-            db_cursor.execute(query=query_str, prepare=False)
-            if db_cursor.rowcount <= 0:
-                info_strs.append('No matching data.')
-            else:
-                results = db_cursor.fetchall()
-                headers = [c.name for c in db_cursor.description]
-                info_strs.append(results_to_text_table(results, headers, alignment={'src_ipaddr': 'l', 'success_ratio':'r', 'session_count':'r', 'auth_count': 'r', 'unique_uids': 'r', 'period': 'r' }))
-                
-                # For each hit, show the uids that were granted sessions:
-                for r in results:
-                    db_cursor.execute(query="SELECT DISTINCT uid FROM inet_log WHERE src_ipaddr = %s AND log_event = 'open_session'",
-                            params=[r[3]])
-                    info_strs.append(f'    - src_ipaddr "{r[3]}", sessions granted on uids:\n'  + 
-                                      '        - ' + \
-                                      '\n        - '.join([str(i[0]) for i in db_cursor.fetchall()]))
-        except Exception as E:
-            info_strs.append(f'ERROR:  Failed to produce top IPs by session success rate: {E}')
-            
-        #
-        # Top N by uids by session success rate:
-        #
-        try:
-            info_strs.append('## Top UIDs by session success rate')
-            query_str = f"""
+                    db_cursor.execute(query=query_str, prepare=False)
+                    if db_cursor.rowcount <= 0:
+                        info_strs.append('No matching data.')
+                    else:
+                        results = db_cursor.fetchall()
+                        headers = [c.name for c in db_cursor.description]
+                        info_strs.append(results_to_text_table(results, headers, alignment={'src_ipaddr': 'l', 'success_ratio':'r', 'session_count':'r', 'auth_count': 'r', 'unique_uids': 'r', 'period': 'r' }))
+                        
+                        # For each hit, show the uids that were granted sessions:
+                        for r in results:
+                            db_cursor.execute(query="SELECT DISTINCT uid FROM inet_log WHERE src_ipaddr = %s AND log_event = 'open_session'",
+                                    params=[r[3]])
+                            info_strs.append(f'    - src_ipaddr "{r[3]}", sessions granted on uids:\n'  + 
+                                              '        - ' + \
+                                              '\n        - '.join([str(i[0]) for i in db_cursor.fetchall()]))
+                except Exception as E:
+                    info_strs.append(f'ERROR:  Failed to produce top IPs by session success rate: {E}')
+                    
+                #
+                # Top N by uids by session success rate:
+                #
+                try:
+                    info_strs.append('## Top UIDs by session success rate')
+                    query_str = f"""
 SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, * FROM (
     SELECT COUNT(CASE WHEN log_event='open_session' THEN 1 END) AS session_count,
             COUNT(CASE WHEN log_event='auth' THEN 1 END) AS auth_count,
@@ -299,30 +315,30 @@ SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, *
         WHERE success_ratio < {cli_args.success_ratio_threshold}
         ORDER BY success_ratio ASC
         LIMIT {cli_args.top_N}"""
-            db_cursor.execute(query=query_str, prepare=False)
-            if db_cursor.rowcount <= 0:
-                info_strs.append('No matching data.')
-            else:
-                results = db_cursor.fetchall()
-                headers = [c.name for c in db_cursor.description]
-                info_strs.append(results_to_text_table(results, headers, alignment={'uid': 'l', 'success_ratio':'r', 'session_count':'r', 'auth_count': 'r', 'unique_ips': 'r', 'period': 'r' }))
-                
-                # For each hit, show the IPs that were granted sessions:
-                for r in results:
-                    db_cursor.execute(query="SELECT DISTINCT src_ipaddr FROM inet_log WHERE uid = %s AND log_event = 'open_session'",
-                            params=[r[3]])
-                    info_strs.append(f'    - uid "{r[3]}", sessions granted on IPs:\n'  + 
-                                      '        - ' + \
-                                      '\n        - '.join([str(i[0]) for i in db_cursor.fetchall()]))
-        except Exception as E:
-            info_strs.append(f'ERROR:  Failed to produce top uids by session success rate: {E}')
-    
-        #
-        # Top N by "open sessions" from off-campus IPs:
-        #
-        try:
-            info_strs.append('## Top (possibly) open sessions from foreign IPs')
-            query_str = f"""
+                    db_cursor.execute(query=query_str, prepare=False)
+                    if db_cursor.rowcount <= 0:
+                        info_strs.append('No matching data.')
+                    else:
+                        results = db_cursor.fetchall()
+                        headers = [c.name for c in db_cursor.description]
+                        info_strs.append(results_to_text_table(results, headers, alignment={'uid': 'l', 'success_ratio':'r', 'session_count':'r', 'auth_count': 'r', 'unique_ips': 'r', 'period': 'r' }))
+                        
+                        # For each hit, show the IPs that were granted sessions:
+                        for r in results:
+                            db_cursor.execute(query="SELECT DISTINCT src_ipaddr FROM inet_log WHERE uid = %s AND log_event = 'open_session'",
+                                    params=[r[3]])
+                            info_strs.append(f'    - uid "{r[3]}", sessions granted on IPs:\n'  + 
+                                              '        - ' + \
+                                              '\n        - '.join([str(i[0]) for i in db_cursor.fetchall()]))
+                except Exception as E:
+                    info_strs.append(f'ERROR:  Failed to produce top uids by session success rate: {E}')
+            
+                #
+                # Top N by "open sessions" from off-campus IPs:
+                #
+                try:
+                    info_strs.append('## Top (possibly) open sessions from foreign IPs')
+                    query_str = f"""
 SELECT uid, src_ipaddr,
        (open_count - close_count) AS live_sessions ,
        (auth_count + open_count + close_count) AS total_events FROM (
@@ -336,25 +352,41 @@ SELECT uid, src_ipaddr,
     ) WHERE (open_count - close_count) > 0
     ORDER BY live_sessions DESC, total_events DESC
     LIMIT {cli_args.top_N}"""
-            db_cursor.execute(query=query_str, prepare=False)
-            if db_cursor.rowcount <= 0:
-                info_strs.append('No matching data.')
-            else:
-                results = []
-                headers = [c.name for c in db_cursor.description]
-                headers.extend(['org cidr', 'org country', 'org descrip'])
-                #
-                # Try to substitute org CIDR and country code for each IP:
-                #
-                for result in db_cursor:
-                    ip_info = dns_helper.ip_to_name(result[1].packed)
-                    if ip_info:
-                        results.append([*result, ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
+                    db_cursor.execute(query=query_str, prepare=False)
+                    if db_cursor.rowcount <= 0:
+                        info_strs.append('No matching data.')
                     else:
-                        results.append([*result, '', '', ''])
-                info_strs.append(results_to_text_table(results, headers, alignment={'uid':'l', 'src_ipaddr': 'l', 'live_sessions': 'r', 'total_events': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
+                        results = []
+                        headers = [c.name for c in db_cursor.description]
+                        headers.extend(['org cidr', 'org country', 'org descrip'])
+                        #
+                        # Try to substitute org CIDR and country code for each IP:
+                        #
+                        for result in db_cursor:
+                            ip_info = dns_helper.ip_to_name(result[1].packed)
+                            if ip_info:
+                                results.append([*result, ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
+                            else:
+                                results.append([*result, '', '', ''])
+                        info_strs.append(results_to_text_table(results, headers, alignment={'uid':'l', 'src_ipaddr': 'l', 'live_sessions': 'r', 'total_events': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
+                except Exception as E:
+                    info_strs.append(f'ERROR:  Failed to produce top (possibly) open sessions from foreign IPs: {E}')
         except Exception as E:
-            info_strs.append(f'ERROR:  Failed to produce top (possibly) open sessions from foreign IPs: {E}')    
+            info_strs.append(f'ERROR:  Failed to open transaction block in top_counts: {E}')
+
+
+def post_maintenance(db_cursor, cli_args, dns_helper):
+    """Perform database maintenance:  vacuum!"""
+    #
+    # Switch to auto-commit mode and perform the vacuum:
+    #
+    if cli_args.should_do_maint:  # and not cli_args.is_dry_run
+        try:
+            info_strs.append('## Database cleanup (post-reporting)')
+            db_cursor.execute(query='VACUUM ANALYZE', prepare=False)
+            info_strs.append(f'Completed database vacuum and analysis.')
+        except Exception as E:
+            info_strs.append(f'ERROR:  Failed database vacuum and analysis: {E}')
 
 
 cli_parser = argparse.ArgumentParser(description='Perform iptracking database maintenance and reporting tasks')
@@ -426,9 +458,10 @@ dns_helper = DNSToOrg()
 # Create the to-do list:
 #
 to_do_list = [
-        maintenance,
+        pre_maintenance,
         daily_event_count,
-        top_counts
+        top_counts,
+        post_maintenance
     ]
 
 info_strs = MessageBody(cli_args)
@@ -438,7 +471,9 @@ info_strs = MessageBody(cli_args)
 #
 try:
     logging.debug('Connecting to database')
-    db_conn = psycopg.connect(' '.join(f'{k}={v}' for k,v in iptracking_db_connparams.items()))
+    db_conn = psycopg.connect(
+                    conninfo=' '.join(f'{k}={v}' for k,v in iptracking_db_connparams.items()),
+                    autocommit=True)
 except Exception as E:
     logging.critical(f'Unable to connect to database: {E}')
 
@@ -451,14 +486,6 @@ try:
             to_do_item(db_cursor, cli_args, dns_helper)
 except Exception as E:
     logging.error(f'Failure while executing tasks: {E}')
-    db_conn.rollback()
-else:
-    if cli_args.is_dry_run:
-        logging.info('Dry run:  rollback any db changes')
-        db_conn.rollback()
-    else:
-        logging.info('Production run:  commit any db changes')
-        db_conn.commit()
 finally:
     logging.debug('Closing database connection')
     db_conn.close()
