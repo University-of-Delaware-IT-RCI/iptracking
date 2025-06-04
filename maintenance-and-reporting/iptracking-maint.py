@@ -91,12 +91,30 @@ def results_to_text_table(results, headers, alignment=None, sort_by=None, revers
 
 
 from ipwhois import IPWhois
+try:
+    import pycountry
+    
+    iptracking_have_pycountry = True
+    def country_name_for_alpha_2(alpha_2):
+        return pycountry.countries.get(alpha_2=alpha_2,
+                    default=pycountry.db.Country(name=alpha_2)).name
+except:
+    iptracking_have_pycountry = False
+    
+    
 
 class DNSToOrg(object):
     """Caching DNS resolution to CIDR/country via whois."""
     
     def __init__(self):
         self._cache = {}
+        self._country_codes = set()
+    
+    def country_code_table_str(self):
+        if iptracking_have_pycountry and len(self._country_codes) > 0:
+            rows = [[ALPHA_2, country_name_for_alpha_2(ALPHA_2)] for ALPHA_2 in self._country_codes]
+            return results_to_text_table(rows, ('Alpha-2', 'Country name'), alignment={'Alpha-2':'c', 'Country name':'l'}, sort_by='Alpha-2')
+        return None
     
     def ip_to_name(self, ipaddr):
         import socket
@@ -108,8 +126,11 @@ class DNSToOrg(object):
                 if whois_result:
                     rdap_result = whois_result.lookup_rdap()
                     if rdap_result:
+                        country_code = rdap_result.get('asn_country_code', '')
+                        if country_code:
+                            self._country_codes.add(country_code)
                         cache_record = { 'asn_cidr': rdap_result.get('asn_cidr', ''),
-                                         'asn_country_code': rdap_result.get('asn_country_code', ''),
+                                         'asn_country_code': country_code,
                                          'asn_description': rdap_result.get('asn_description', '') }
                         self._cache[ipaddr] = cache_record
             except:
@@ -221,10 +242,10 @@ def top_counts(db_cursor, cli_args, dns_helper):
                     info_strs.append('## Top IPs by event count')
                     query_str = f"""
 SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per_day FROM (
-    SELECT COUNT(*) AS event_count, src_ipaddr, COUNT(DISTINCT uid) AS unique_uids, (MAX(log_date) - MIN(log_date)) AS period
+    SELECT COUNT(*) AS event_count, COUNT(CASE WHEN log_event = 'open_session' THEN 1 END) AS session_count, src_ipaddr, COUNT(DISTINCT uid) AS unique_uids, (MAX(log_date) - MIN(log_date)) AS period
         FROM inet_log
         GROUP BY src_ipaddr
-        ORDER BY event_count DESC
+        ORDER BY event_count, session_count DESC
     ) WHERE event_count > 2500
     LIMIT {cli_args.top_N}"""
                     db_cursor.execute(query=query_str, prepare=False)
@@ -238,12 +259,12 @@ SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per
                         # Try to substitute org CIDR and country code for each IP:
                         #
                         for result in db_cursor:
-                            ip_info = dns_helper.ip_to_name(result[1].packed)
+                            ip_info = dns_helper.ip_to_name(result[2].packed)
                             if ip_info:
                                 results.append([*result, ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
                             else:
                                 results.append([*result, '', '', ''])
-                        info_strs.append(results_to_text_table(results, headers, alignment={'event_count':'r', 'src_ipaddr':'l', 'unique_uids': 'r', 'period': 'r', 'avg_per_day': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
+                        info_strs.append(results_to_text_table(results, headers, alignment={'event_count':'r', 'session_count':'r', 'src_ipaddr':'l', 'unique_uids': 'r', 'period': 'r', 'avg_per_day': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
                 except Exception as E:
                     info_strs.append(f'ERROR:  Failed to produce top IPs by event count: {E}')
                 
@@ -484,6 +505,12 @@ try:
     with db_conn.cursor() as db_cursor:
         for to_do_item in to_do_list:
             to_do_item(db_cursor, cli_args, dns_helper)
+    
+    # Add the DNS country code summary if necessary:
+    cc_summary = dns_helper.country_code_table_str()
+    if cc_summary:
+        info_strs.append('## Country codes')
+        info_strs.append(cc_summary)
 except Exception as E:
     logging.error(f'Failure while executing tasks: {E}')
 finally:

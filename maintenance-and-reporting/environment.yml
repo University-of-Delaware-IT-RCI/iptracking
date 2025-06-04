@@ -4,6 +4,7 @@ dependencies:
   - prettytable
   - psycopg
   - python>=3.13
+  - pycountry
   - pip
   - pip:
       - ipwhois
