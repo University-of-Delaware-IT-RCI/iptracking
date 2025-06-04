@@ -20,6 +20,26 @@ import psycopg
 VENV_PREFIX = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 #
+# Name of the cluster on which this is running:
+#
+iptracking_cluster_name = 'Caviness'
+
+#
+# Name of the cluster on which this is running:
+#
+iptracking_email_subject = f'[{iptracking_cluster_name}] iptracking maintenance and report run'
+
+#
+# Official sender email for the reports:
+#
+iptracking_email_sender = 'root@caviness.hpc.udel.edu'
+
+#
+# SMTP server to which we direct emails:
+#
+iptracking_smtp_server = 'localhost'
+
+#
 # Database connection parameters:
 # [see https://www.postgresql.org/docs/17/libpq-connect.html#LIBPQ-PARAMKEYWORDS]
 #
@@ -530,7 +550,7 @@ if not info_strs.is_empty():
 
         mm = Message()
         mm.set_payload(message_body)
-        mm['subject'] = '[Caviness] iptracking maintenance and report run, ' + info_strs.official_timestamp()
+        mm['subject'] = iptracking_email_subject + ', ' + info_strs.official_timestamp()
 
-        mta = smtplib.SMTP('localhost')
-        mta.sendmail('root@caviness.hpc.udel.edu', cli_args.emailAddresses, str(mm))
+        mta = smtplib.SMTP(iptracking_smtp_server)
+        mta.sendmail(iptracking_email_sender, cli_args.emailAddresses, str(mm))
