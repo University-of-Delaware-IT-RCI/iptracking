@@ -1,0 +1,174 @@
+--
+-- PAM event types we expect to be logged:
+--
+CREATE TABLE log_event_t (
+    enum_id     TINYINT UNSIGNED NOT NULL UNIQUE,
+    label       VARCHAR(24) UNIQUE NOT NULL
+);
+INSERT INTO log_event_t VALUES
+    (0, 'unknown'),
+    (1, 'auth'),
+    (2, 'open_session'),
+    (3, 'close_session');
+
+--
+-- Each connection attempt gets logged as the source IP address and TCP
+-- port with the user identifier that was provided by the remote side.
+-- PostgreSQL has the well-integrated INET and enumerated types, but in
+-- MySQL we need to use an external table for the enumerated type and
+-- text-to-binary IPv4 address conversion with storage of the address as
+-- a 32-bit unsigned int.
+--
+CREATE TABLE inet_log_raw (
+    dst_ipaddr      INT UNSIGNED NOT NULL,
+    src_ipaddr      INT UNSIGNED NOT NULL,
+    src_port        SMALLINT UNSIGNED NOT NULL,
+    log_event       TINYINT UNSIGNED NOT NULL DEFAULT 0
+                    REFERENCES log_event_t(enum_id)
+                    ON DELETE CASCADE,
+    uid             TEXT NOT NULL,
+    log_date        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX inet_log_dst_ipaddr ON inet_log_raw(dst_ipaddr);
+CREATE INDEX inet_log_src_ipaddr ON inet_log_raw(src_ipaddr);
+CREATE INDEX inet_log_uid ON inet_log_raw(uid(255));
+
+
+--
+-- We reproduce the PostgreSQL inet_log table by means of a view that
+-- converts the binary IPv4 addresses to text and maps the enumerated
+-- event type index to its label:
+--
+CREATE VIEW inet_log AS
+    SELECT  INET_NTOA(l.dst_ipaddr) AS dst_ipaddr,
+            INET_NTOA(l.src_ipaddr) AS src_ipaddr,
+            l.src_port, let.label AS log_event,
+            l.uid, l.log_date
+        FROM inet_log_raw AS l
+        INNER JOIN log_event_t AS let ON (let.enum_id = l.log_event);
+
+--
+-- Mimic the simpler by-count table formats with the full data.  In each
+-- case we start with a view drawn from the inet_log_raw table with binary
+-- IPv4 addresses, then create a child view that presents the data in
+-- textual form:
+--
+CREATE VIEW ips_raw AS
+    SELECT dst_ipaddr, src_ipaddr AS ipaddr, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
+        FROM inet_log_raw
+        GROUP BY dst_ipaddr, src_ipaddr;
+CREATE VIEW ips AS
+    SELECT INET_NTOA(dst_ipaddr) AS dst_ipaddr, INET_NTOA(ipaddr) AS ipaddr, log_count, start_date, end_date FROM ips_raw;
+--
+CREATE VIEW nets_24_raw AS
+    SELECT  dst_ipaddr,
+            (src_ipaddr & 0xffffff00) AS ipnet,
+            COUNT(*) AS log_count,
+            MIN(log_date) AS start_date,
+            MAX(log_date) AS end_date
+    FROM inet_log_raw
+    GROUP BY dst_ipaddr, ipnet;
+CREATE VIEW nets_24 AS
+    SELECT INET_NTOA(dst_ipaddr) AS dst_ipaddr, INET_NTOA(ipnet) AS ipnet, log_count, start_date, end_date FROM nets_24_raw;
+--
+CREATE VIEW nets_16_raw AS
+    SELECT  dst_ipaddr,
+            (src_ipaddr & 0xffff0000) AS ipnet,
+            COUNT(*) AS log_count,
+            MIN(log_date) AS start_date,
+            MAX(log_date) AS end_date
+    FROM inet_log_raw
+    GROUP BY dst_ipaddr, ipnet;
+CREATE VIEW nets_16 AS
+    SELECT INET_NTOA(dst_ipaddr) AS dst_ipaddr, INET_NTOA(ipnet) AS ipnet, log_count, start_date, end_date FROM nets_16_raw;
+--
+CREATE VIEW nets_8_raw AS
+    SELECT  dst_ipaddr,
+            (src_ipaddr & 0xff000000) AS ipnet,
+            COUNT(*) AS log_count,
+            MIN(log_date) AS start_date,
+            MAX(log_date) AS end_date
+    FROM inet_log_raw
+    GROUP BY dst_ipaddr, ipnet;
+CREATE VIEW nets_8 AS
+    SELECT INET_NTOA(dst_ipaddr) AS dst_ipaddr, INET_NTOA(ipnet) AS ipnet, log_count, start_date, end_date FROM nets_8_raw;
+--
+DELIMITER $$
+CREATE PROCEDURE iptracking.nets_view(prefix_len INTEGER)
+BEGIN
+    SELECT
+            INET_NTOA(dst_ipaddr) AS dst_ipaddr,
+            INET_NTOA(src_ipaddr & (0xffffffff << (32 - prefix_len))) AS ipnet,
+            COUNT(*) AS log_count,
+            MIN(log_date) AS start_date,
+            MAX(log_date) AS end_date
+        FROM inet_log_raw
+        GROUP BY dst_ipaddr, ipnet;
+END $$
+DELIMITER ;
+
+
+CREATE VIEW agg_ips_raw AS
+    SELECT src_ipaddr AS ipaddr, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
+        FROM inet_log_raw
+        GROUP BY ipaddr;
+CREATE VIEW agg_ips AS
+    SELECT INET_NTOA(ipaddr) AS ipaddr, log_count, start_date, end_date FROM agg_ips_raw;
+--
+CREATE VIEW agg_nets_24_raw AS
+    SELECT (src_ipaddr & 0xffffff00) AS ipnet, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
+        FROM inet_log_raw
+        GROUP BY ipnet;
+CREATE VIEW agg_nets_24 AS
+    SELECT INET_NTOA(ipnet) AS ipnet, log_count, start_date, end_date FROM agg_nets_24_raw;
+--
+CREATE VIEW agg_nets_16_raw AS
+    SELECT (src_ipaddr & 0xffff0000) AS ipnet, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
+        FROM inet_log_raw
+        GROUP BY ipnet;
+CREATE VIEW agg_nets_16 AS
+    SELECT INET_NTOA(ipnet) AS ipnet, log_count, start_date, end_date FROM agg_nets_16_raw;
+--
+CREATE VIEW agg_nets_8_raw AS
+    SELECT (src_ipaddr & 0xff000000) AS ipnet, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
+        FROM inet_log_raw
+        GROUP BY ipnet;
+CREATE VIEW agg_nets_8 AS
+    SELECT INET_NTOA(ipnet) AS ipnet, log_count, start_date, end_date FROM agg_nets_8_raw;
+--
+DELIMITER $$
+CREATE PROCEDURE iptracking.agg_nets_view(prefix_len INTEGER)
+BEGIN
+    SELECT
+            INET_NTOA(src_ipaddr & (0xffffffff << (32 - prefix_len))) AS ipnet,
+            COUNT(*) AS log_count,
+            MIN(log_date) AS start_date,
+            MAX(log_date) AS end_date
+        FROM inet_log_raw
+        GROUP BY ipnet;
+END $$
+DELIMITER ;
+
+
+--
+-- Stored procedure that handles the insertion of an event.
+--
+DELIMITER $$
+CREATE PROCEDURE iptracking.log_one_event(
+    IN in_dst_ipaddr    TEXT,
+    IN in_src_ipaddr    TEXT,
+    IN in_src_port      TEXT,
+    IN in_log_event     TEXT,
+    IN in_uid           TEXT,
+    IN in_log_date      TEXT
+)
+BEGIN
+    INSERT INTO inet_log_raw (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date)
+        VALUES (INET_ATON(in_dst_ipaddr),
+                INET_ATON(in_src_ipaddr),
+                CAST(in_src_port AS UNSIGNED INTEGER),
+                (SELECT enum_id FROM log_event_t WHERE label = in_log_event),
+                in_uid,
+                in_log_date);
+END $$
+DELIMITER ;

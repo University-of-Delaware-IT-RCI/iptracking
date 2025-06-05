@@ -170,6 +170,11 @@ iptracking=select avg(delta_t) from (select log_date - lag(log_date) over () as 
 (1 row)
 ```
 
+### mysql
+
+A mysql plugin is available with a database schema that mimics (as closely as possible) the format of the PostgreSQL schema.
+
+
 ## Build and install
 
 The package includes CMake build infrastructure.  The following non-standard options are present:
@@ -210,12 +215,13 @@ The `csvfile` driver is always included in the daemon.
 | `PostgreSQL_ROOT` | | Prefix path hint for locating the PostgreSQL header/library |
 | `ENABLE_SQLITE3_DRIVER` | Off | Build the SQLite3 database driver |
 | `SQLite3_ROOT` | | Prefix path hint for locating the SQLite3 header/library |
+| `MySQL_CONFIG_EXECUTABLE` | The path to the `mysql_config` associated with the MySQL library |
 
 ### CMake build configuration
 
 The CMake infrastructure will look for a pthreads library; a libyaml library; and a PostgreSQL library (version 15 and up).
 
-To influence the locating of the libyaml library, the `libyaml_ROOT` variable can be set to the installation prefix of the library.  Likewise, discovery of the PostgreSQL library can be influenced by setting `PostgreSQL_ROOT`.
+To influence the locating of the libyaml library, the `libyaml_ROOT` variable can be set to the installation prefix of the library.  Likewise, discovery of the PostgreSQL library can be influenced by setting `PostgreSQL_ROOT`.  The MySQL library is found by setting the `MySQL_CONFIG_EXECUTABLE` variable to the config helper associated with the MySQL library you are linking against.
 
 Unlike most CMake projects, the `CMAKE_INSTALL_PREFIX` will default to the root directory, not `/usr/local`.  This will place the YAML configuration file in `/etc/iptracking.yml`, the socket file at `/var/run/iptracking.s`, and the executables in `/usr/sbin`.
 
@@ -228,6 +234,7 @@ $ vpkg_devrequire postgresql/17.5 sqlite3/3.34.1
 $ cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release \
     -DENABLE_POSTGRESQL_DRIVER=On -DPostgreSQL_ROOT="$POSTGRESQL_PREFIX" \
     -DENABLE_SQLITE3_DRIVER=On -DSQLite3_ROOT="$SQLITE3_PREFIX" \
+    -DENABLE_MYSQL_DRIVER=On -DMySQL_CONFIG_EXECUTABLE="$(which mysql_config)" \
     -DSHOULD_INSTALL_SYSTEMD_SERVICE=On \
     -DSOCKET_FILEPATH_DEFAULT=/var/run/iptracking.s \
     ..

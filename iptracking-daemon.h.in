@@ -74,6 +74,7 @@
 
 #cmakedefine HAVE_POSTGRESQL
 #cmakedefine HAVE_SQLITE3
+#cmakedefine HAVE_MYSQL
 
 //
 

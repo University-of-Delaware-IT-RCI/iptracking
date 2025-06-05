@@ -71,6 +71,10 @@ __db_instance_alloc(
 #   include "db_drivers/db_instance_sqlite3.c"
 #endif
 
+#ifdef HAVE_MYSQL
+#   include "db_drivers/db_instance_mysql.c"
+#endif
+
 static db_driver_callbacks_t* __db_drivers[] = {
         &db_driver_csvfile_callbacks,
 #ifdef HAVE_POSTGRESQL

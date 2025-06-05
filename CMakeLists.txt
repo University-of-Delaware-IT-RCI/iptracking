@@ -8,9 +8,12 @@
 #
 cmake_minimum_required(VERSION 3.20)
 project(iptracking-daemon
-        VERSION 0.0.1
+        VERSION 0.0.2
         DESCRIPTION "A multithreaded message-processing queue for PAM SSH events"
         LANGUAGES C)
+
+# Look for local modules in this path:
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 #
 # If no install path was explicitly provided, override the default /usr/local
@@ -115,6 +118,15 @@ if (ENABLE_SQLITE3_DRIVER)
 endif ()
 
 #
+# Find a Mysql client package:
+#
+option(ENABLE_MYSQL_DRIVER Off "Include the Mysql database driver")
+if (ENABLE_MYSQL_DRIVER)
+    set(HAVE_MYSQL On)
+    include(FindMySQL)
+endif ()
+
+#
 # Generate the shared header file with version info, other compile-time option
 # values, and all of the headers we'll include in general:
 #
@@ -149,20 +161,19 @@ add_executable(iptracking-daemon
 target_include_directories(iptracking-daemon
     PUBLIC
         "${PROJECT_BINARY_DIR}"
-        Threads::Threads
-        PostgreSQL::PostgreSQL
         "${LIBYAML_INCLUDE_DIR}")
 target_link_libraries(iptracking-daemon
     PRIVATE
         Threads::Threads
         "${LIBYAML_LIBRARY}")
 if (HAVE_POSTGRESQL)
-    target_include_directories(iptracking-daemon PUBLIC PostgreSQL::PostgreSQL)
     target_link_libraries(iptracking-daemon PRIVATE PostgreSQL::PostgreSQL)
 endif ()
 if (HAVE_SQLITE3)
-    target_include_directories(iptracking-daemon PUBLIC SQLite::SQLite3)
     target_link_libraries(iptracking-daemon PRIVATE SQLite::SQLite3)
+endif ()
+if (HAVE_MYSQL)
+    target_link_libraries(iptracking-daemon PRIVATE MySQL::MySQL)
 endif ()
 # Install the executable in the sbin/ directory with owner and
 # group privileges only:

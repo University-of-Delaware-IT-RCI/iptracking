@@ -14,9 +14,9 @@
 #define DB_INSTANCE_POSTGRESQL_LOG_STMT_NPARAMS 6
 #define DB_INSTANCE_POSTGRESQL_LOG_STMT_QUERY_FORMAT "SELECT %s%slog_one_event($1, $2, $3, $4, $5, $6);"
 
-static const char   *db_log_stmt_name = DB_INSTANCE_POSTGRESQL_LOG_STMT_NAME_STR;
-static const char   *db_log_stmt_query_format = DB_INSTANCE_POSTGRESQL_LOG_STMT_QUERY_FORMAT;
-static const int    db_log_stmt_nparams = DB_INSTANCE_POSTGRESQL_LOG_STMT_NPARAMS;
+static const char   *db_postgresql_log_stmt_name = DB_INSTANCE_POSTGRESQL_LOG_STMT_NAME_STR;
+static const char   *db_postgresql_log_stmt_query_format = DB_INSTANCE_POSTGRESQL_LOG_STMT_QUERY_FORMAT;
+static const int    db_postgresql_log_stmt_nparams = DB_INSTANCE_POSTGRESQL_LOG_STMT_NPARAMS;
 
 //
 
@@ -302,7 +302,7 @@ __db_instance_postgresql_open(
             
             DEBUG("Database: connection okay, preparing query");    
             /* Prepare the query with the schema et al.: */
-            db_log_stmt_query_len = asprintf(&db_log_stmt_query, db_log_stmt_query_format,
+            db_log_stmt_query_len = asprintf(&db_log_stmt_query, db_postgresql_log_stmt_query_format,
                                                 (THE_DB->schema && *THE_DB->schema) ? THE_DB->schema : "",
                                                 (THE_DB->schema && *THE_DB->schema) ? "." : "");
             if ( db_log_stmt_query_len && db_log_stmt_query ) {
@@ -310,8 +310,8 @@ __db_instance_postgresql_open(
                 ExecStatusType      db_rc;
                 
                 /* Send the query to the server for preparation: */
-                db_result = PQprepare(THE_DB->db_conn, db_log_stmt_name, db_log_stmt_query,
-                                    db_log_stmt_nparams, NULL);
+                db_result = PQprepare(THE_DB->db_conn, db_postgresql_log_stmt_name, db_log_stmt_query,
+                                    db_postgresql_log_stmt_nparams, NULL);
                 db_rc = PQresultStatus(db_result);
                 PQclear(db_result);
                 free((void*)db_log_stmt_query);
@@ -372,7 +372,7 @@ __db_instance_postgresql_log_one_event(
         param_values[3] = log_event_to_str(the_event->event);
         param_values[4] = the_event->uid;
         param_values[5] = the_event->log_date;
-        db_result = PQexecPrepared(THE_DB->db_conn, db_log_stmt_name, db_log_stmt_nparams,
+        db_result = PQexecPrepared(THE_DB->db_conn, db_postgresql_log_stmt_name, db_postgresql_log_stmt_nparams,
                             param_values, NULL, NULL, 0);
         db_rc = PQresultStatus(db_result);
         PQclear(db_result);

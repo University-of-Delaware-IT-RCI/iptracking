@@ -12,7 +12,7 @@
 
 #define DB_INSTANCE_SQLITE3_LOG_STMT_QUERY "INSERT INTO inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
 
-static const char   *db_log_stmt_query = DB_INSTANCE_SQLITE3_LOG_STMT_QUERY;
+static const char   *db_sqlite3_log_stmt_query = DB_INSTANCE_SQLITE3_LOG_STMT_QUERY;
 
 //
 
@@ -259,7 +259,7 @@ __db_instance_sqlite3_open(
         }
         
         DEBUG("Database: connection okay, preparing query");
-        rc = sqlite3_prepare_v2(THE_DB->db_conn, db_log_stmt_query, -1, &THE_DB->db_query, NULL);
+        rc = sqlite3_prepare_v2(THE_DB->db_conn, db_sqlite3_log_stmt_query, -1, &THE_DB->db_query, NULL);
         if ( rc != SQLITE_OK ) {
             if ( error_msg ) *error_msg = __db_instance_sqlite3_copy_error(THE_DB, sqlite3_errstr(rc));
             return false;
