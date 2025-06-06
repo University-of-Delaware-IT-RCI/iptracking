@@ -12,6 +12,7 @@ import errno
 import resource
 import prettytable
 import psycopg
+import ldap3
 
 #
 # Find the installation root for this script (which is expected to be in the 'bin'
@@ -20,52 +21,91 @@ import psycopg
 VENV_PREFIX = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 #
-# Name of the cluster on which this is running:
+# Load a config file:
 #
-iptracking_cluster_name = 'Caviness'
+CONFIG_FILE = os.path.join(VENV_PREFIX, 'etc', 'iptracking.yml')
+if not os.path.isfile(CONFIG_FILE):
+    sys.stderr.write(f'CRITICAL ERROR:  no config file at {CONFIG_FILE}\n')
+    sys.exit(errno.ENOENT)
+try:
+    import yaml
+    config_fptr = open(CONFIG_FILE)
+except Exception as E:
+    sys.stderr.write(f'CRITICAL ERROR:  unable to read config file at {CONFIG_FILE}: {E}\n')
+    sys.exit(errno.EPERM)
+else:
+    with config_fptr:
+        iptracking_config = yaml.safe_load(config_fptr)
+    
+    #
+    # Cluster name from config:
+    #
+    if not 'cluster_name' in iptracking_config:
+        sys.stderr.write(f'CRITICAL ERROR:  no cluster_name in config file at {CONFIG_FILE}\n')
+        sys.exit(EINVAL)
+    iptracking_cluster_name = str(iptracking_config['cluster_name'])
+    
+    #
+    # Email configuration properties:
+    #
+    iptracking_email_subject = f'[{iptracking_cluster_name}] iptracking maintenance and report run'
+    iptracking_email_sender = 'root@localhost'
+    iptracking_smtp_server = 'localhost'
+    if 'email' in iptracking_config:
+        iptracking_email_subject = iptracking_config['email'].get('subject',
+                        iptracking_email_subject)
+        iptracking_email_sender = iptracking_config['email'].get('sender',
+                        iptracking_email_sender)
+        iptracking_smtp_server = iptracking_config['email'].get('smtp_server',
+                        iptracking_smtp_server)
+    
+    #
+    # LDAP configuration properties:
+    #
+    hpc_ldap_server_hostname = 'localhost'
+    hpc_ldap_server_port = 389
+    hpc_ldap_base_dn = f''
+    if 'ldap' in iptracking_config:
+        hpc_ldap_server_hostname = iptracking_config['ldap'].get('hostname',
+                        hpc_ldap_server_hostname)
+        hpc_ldap_server_port = int(iptracking_config['ldap'].get('port',
+                        hpc_ldap_server_port))
+        hpc_ldap_base_dn = iptracking_config['ldap'].get('base_dn',
+                        hpc_ldap_base_dn)
+    
+    #
+    # Database configuration parameters:
+    # [see https://www.postgresql.org/docs/17/libpq-connect.html#LIBPQ-PARAMKEYWORDS]
+    #
+    iptracking_db_connparams = {
+            'dbname': 'iptracking',
+            'user': 'iptracking',
+            'host': 'XXXXXXXXXXXXXXXXXX',
+            'port': '45432',
+            'passfile': os.path.join(VENV_PREFIX, 'etc', 'iptracking.passwd')
+        }
+    if 'database' in iptracking_config:
+        for k,v in iptracking_config['database'].items():
+            iptracking_db_connparams[k] = str(v)
+    
+    #
+    # Defaults:
+    #
+    iptracking_default_purge_day_count = 10
+    iptracking_default_top_N = 20
+    iptracking_default_success_ratio_threshold = 0.05
+    if 'defaults' in iptracking_config:
+        iptracking_default_purge_day_count = int(iptracking_config['defaults'].get('purge_day_count',
+                        iptracking_default_purge_day_count))
+        iptracking_default_top_N = int(iptracking_config['defaults'].get('top_N',
+                        iptracking_default_top_N))
+        iptracking_default_success_ratio_threshold = float(iptracking_config['defaults'].get('success_ratio_threshold',
+                        iptracking_default_success_ratio_threshold))
 
 #
-# Name of the cluster on which this is running:
+# Were we able to create and populate the temp HPC uid table?
 #
-iptracking_email_subject = f'[{iptracking_cluster_name}] iptracking maintenance and report run'
-
-#
-# Official sender email for the reports:
-#
-iptracking_email_sender = 'root@caviness.hpc.udel.edu'
-
-#
-# SMTP server to which we direct emails:
-#
-iptracking_smtp_server = 'localhost'
-
-#
-# Database connection parameters:
-# [see https://www.postgresql.org/docs/17/libpq-connect.html#LIBPQ-PARAMKEYWORDS]
-#
-iptracking_db_connparams = {
-        'dbname': 'iptracking',
-        'user': 'iptracking',
-        'host': 'r02mgmt02',
-        'port': '45432',
-        'passfile': os.path.join(VENV_PREFIX, 'etc', 'iptracking.passwd')
-    }
-
-#
-# Events older than this many days will be scrubbed:
-#
-iptracking_default_purge_day_count = 10
-
-#
-# Number of results to include in summaries:
-#
-iptracking_default_top_N = 20
-
-#
-# Success ratio lower threshold — anything below this looks like successful
-# hacking, possibly:
-#
-iptracking_default_success_ratio_threshold = 0.05
+iptracking_have_hpc_uids_table = False
 
 #
 # Table style:
@@ -158,6 +198,38 @@ class DNSToOrg(object):
         else:
             cache_record = self._cache[ipaddr]
         return cache_record
+
+
+def load_cluster_uids(db_cursor):
+    """Query LDAP for a list of all HPC users and load them into a temporary database table."""
+    global      iptracking_have_hpc_uids_table
+    
+    # Prep the temp table:
+    try:
+        db_cursor.execute('CREATE TEMP TABLE hpc_uids ( uid TEXT )', prepare=False)
+    except Exception as E:
+        info_strs.append(f'ERROR:  Failed to create temporary uid table: {E}')
+        return
+    
+    # Connect to the LDAP server
+    ldap_server = ldap3.Server(hpc_ldap_server_hostname, port=hpc_ldap_server_port, get_info='NONE')
+    with ldap3.Connection(ldap_server, auto_bind=True) as ldap_conn:
+        ldap_conn.search(
+                search_base=hpc_ldap_base_dn,
+                search_filter='(objectClass=alias)',
+                search_scope=ldap3.LEVEL,
+                dereference_aliases=ldap3.DEREF_NEVER,
+                attributes=['uid'])
+        found_at_least_one = False
+        for ldap_rec in ldap_conn.entries:
+            try:
+                db_cursor.execute('INSERT INTO hpc_uids VALUES (%s)', (str(ldap_rec.uid),), prepare=True)
+                found_at_least_one = True
+            except Exception as E:
+                info_strs.append(f'ERROR:  Failed to add uid to temporary uid table: {E}')
+                return
+        iptracking_have_hpc_uids_table = found_at_least_one
+    info_strs.append('Temporary HPC uid table created')
 
 
 class MessageBody():
@@ -412,6 +484,57 @@ SELECT uid, src_ipaddr,
                         info_strs.append(results_to_text_table(results, headers, alignment={'uid':'l', 'src_ipaddr': 'l', 'live_sessions': 'r', 'total_events': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
                 except Exception as E:
                     info_strs.append(f'ERROR:  Failed to produce top (possibly) open sessions from foreign IPs: {E}')
+                
+                if iptracking_have_hpc_uids_table:
+                    #
+                    # Top N for real users by number of unique IPs
+                    #
+                    try:
+                        info_strs.append('## Top unique IP counts for open_session, actual HPC users')
+                        query_str = f"""
+SELECT unique_ip_count, array_length(foreign_ips, 1) AS foreign_ip_count, uid, foreign_ips FROM (
+    SELECT COUNT(DISTINCT src_ipaddr) AS unique_ip_count,
+           uid,
+           array_agg(DISTINCT src_ipaddr) FILTER (WHERE NOT (src_ipaddr << '128.175.0.0/16'::CIDR OR src_ipaddr << '128.4.0.0/16'::CIDR OR src_ipaddr << '10.0.0.0/8'::CIDR)) AS foreign_ips
+        FROM inet_log
+        WHERE uid IN (SELECT uid FROM hpc_uids) AND log_event='open_session'
+        GROUP BY uid
+    )
+    WHERE array_length(foreign_ips, 1) > 0
+    ORDER BY (unique_ip_count * array_length(foreign_ips, 1)) DESC, uid ASC
+    LIMIT {cli_args.top_N}"""
+                        db_cursor.execute(query=query_str, prepare=False)
+                        if db_cursor.rowcount <= 0:
+                            info_strs.append('No matching data.')
+                        else:
+                            # We're going to process each tuple to add duplicate rows for the actual IPs:
+                            results = []
+                            headers = ('unique_ip_count', 'foreign_ip_count', 'uid', 'asn_cidr', 'asn_country_code', 'asn_description', 'foreign_ips')
+                            for result in db_cursor:
+                                ips = result[3]
+                                if len(ips):
+                                    row = [result[0], result[1], result[2]]
+                                    asns = {}
+                                    for ip in ips:
+                                        ip_info = dns_helper.ip_to_name(ip.packed)
+                                        if ip_info:
+                                            if not ip_info['asn_cidr'] in asns:
+                                                asns[ip_info['asn_cidr']] = [ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description'], [str(ip)]]
+                                            else:
+                                                asns[ip_info['asn_cidr']][3].append(str(ip))
+                                        else:
+                                            if not '' in asns:
+                                                asns[''] = ['', '', '', [str(ip)]]
+                                            else:
+                                                asns[''][3].append(str(ip))
+                                    for _, asn in asns.items():
+                                        row.extend(asn[0:3])
+                                        row.append(','.join(asn[3]))
+                                        results.append(row)
+                                        row = ['', '', '']
+                            info_strs.append(results_to_text_table(results, headers, alignment={'unique_ip_count':'r', 'foreign_ip_count': 'r', 'uid':'l', 'asn_cidr':'l', 'asn_country_code':'c', 'asn_description':'l', 'foreign_ips':'l'}))
+                    except Exception as E:
+                        info_strs.append(f'ERROR:  Failed to produce top unique IP counts for open_session, actual HPC users: {E}')
         except Exception as E:
             info_strs.append(f'ERROR:  Failed to open transaction block in top_counts: {E}')
 
@@ -523,6 +646,7 @@ except Exception as E:
 #
 try:
     with db_conn.cursor() as db_cursor:
+        load_cluster_uids(db_cursor)
         for to_do_item in to_do_list:
             to_do_item(db_cursor, cli_args, dns_helper)
     

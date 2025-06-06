@@ -1,10 +1,12 @@
 channels:
   - conda-forge
 dependencies:
+  - ldap3
   - prettytable
   - psycopg
   - python>=3.13
   - pycountry
+  - pyyaml
   - pip
   - pip:
       - ipwhois

@@ -1,0 +1,19 @@
+cluster_name: hpc_cluster
+defaults:
+    purge_day_count: 10
+    top_N: 20
+    success_ratio_threshold: 0.05
+email:
+    smtp_server: localhost
+    subject: [hpc_cluster] iptracking maintenance and report run
+    sender: root@hpc_cluster.domain.com
+ldap:
+    hostname: ldap.domain.com
+    port: 389
+    base_dn: ou=People,dc=domain,dc=com
+database:
+    dbname: iptracking
+    user: iptracking
+    host: localhost
+    port: 5432
+    password: letmein25%
