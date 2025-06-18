@@ -37,6 +37,7 @@ static void __db_instance_sqlite3_summarize_to_log(db_instance_t *the_db);
 static bool __db_instance_sqlite3_open(db_instance_t *the_db, const char **error_msg);
 static bool __db_instance_sqlite3_close(db_instance_t *the_db, const char **error_msg);
 static bool __db_instance_sqlite3_log_one_event(db_instance_t *the_db, log_data_t *the_event, const char **error_msg);
+static struct db_blocklist_enum* __db_instance_sqlite3_blocklist_enum_open(db_instance_t *the_db);
 
 //
 
@@ -49,7 +50,10 @@ static db_driver_callbacks_t    db_driver_sqlite3_callbacks = {
         .summarize_to_log = __db_instance_sqlite3_summarize_to_log,
         .open = __db_instance_sqlite3_open,
         .close = __db_instance_sqlite3_close,
-        .log_one_event = __db_instance_sqlite3_log_one_event
+        .log_one_event = __db_instance_sqlite3_log_one_event,
+        .blocklist_enum_open = __db_instance_sqlite3_blocklist_enum_open,
+        
+        .blocklist_async_notification_toggle = NULL
     };
     
 //
@@ -258,13 +262,17 @@ __db_instance_sqlite3_open(
             return false;
         }
         
-        DEBUG("Database: connection okay, preparing query");
-        rc = sqlite3_prepare_v2(THE_DB->db_conn, db_sqlite3_log_stmt_query, -1, &THE_DB->db_query, NULL);
-        if ( rc != SQLITE_OK ) {
-            if ( error_msg ) *error_msg = __db_instance_sqlite3_copy_error(THE_DB, sqlite3_errstr(rc));
-            return false;
+        if ( (THE_DB->base.options & db_options_no_pam_logging) == db_options_no_pam_logging ) {
+            DEBUG("Database: connection okay"); 
+        } else {
+            DEBUG("Database: connection okay, preparing query");
+            rc = sqlite3_prepare_v2(THE_DB->db_conn, db_sqlite3_log_stmt_query, -1, &THE_DB->db_query, NULL);
+            if ( rc != SQLITE_OK ) {
+                if ( error_msg ) *error_msg = __db_instance_sqlite3_copy_error(THE_DB, sqlite3_errstr(rc));
+                return false;
+            }
+            DEBUG("Database: query prepared, database ready");
         }
-        DEBUG("Database: query prepared, database ready");
     }
     return true;
 }
@@ -329,4 +337,96 @@ __db_instance_sqlite3_log_one_event(
         sqlite3_reset(THE_DB->db_query);
     }
     return okay;
+}
+
+//
+
+typedef struct {
+    db_blocklist_enum_t     base;
+    //
+    sqlite3_stmt            *query;
+    bool                    is_first, is_done;
+} db_instance_sqlite3_blocklist_enum_t;
+
+//
+
+const char*
+__db_instance_sqlite3_blocklist_enum_next(
+    db_blocklist_enum_ref   the_enum
+)
+{
+    db_instance_sqlite3_blocklist_enum_t    *THE_ENUM = (db_instance_sqlite3_blocklist_enum_t*)the_enum;
+    const char                              *result = NULL;
+    
+    if ( THE_ENUM && ! THE_ENUM->is_done ) {
+        int                                 rc;
+        
+        if ( THE_ENUM->is_first ) {
+            rc = SQLITE_ROW;
+            THE_ENUM->is_first = false;
+        } else {
+            rc = sqlite3_step(THE_ENUM->query);
+        }
+        if ( rc == SQLITE_ROW ) {
+            result = (const char*)sqlite3_column_text(THE_ENUM->query, 0);
+        } else {
+            THE_ENUM->is_done = true;
+        }
+    }
+    return result;
+}
+
+//
+
+void
+__db_instance_sqlite3_blocklist_enum_close(
+    db_blocklist_enum_ref   the_enum
+)
+{
+    db_instance_sqlite3_blocklist_enum_t    *THE_ENUM = (db_instance_sqlite3_blocklist_enum_t*)the_enum;
+    
+    if ( THE_ENUM ) {
+        DEBUG("Database:  blocklist enum:  close enumerator %p", THE_ENUM);
+        if ( THE_ENUM->query ) sqlite3_finalize(THE_ENUM->query);
+        free((void*)THE_ENUM);
+    }
+}
+
+//
+
+struct db_blocklist_enum*
+__db_instance_sqlite3_blocklist_enum_open(
+    db_instance_t   *the_db
+)
+{
+    db_instance_sqlite3_t                   *THE_DB = (db_instance_sqlite3_t*)the_db;
+    db_instance_sqlite3_blocklist_enum_t    *new_enum = NULL;
+    sqlite3_stmt                            *query = NULL;
+    int                                     rc;
+    
+    if ( THE_DB->db_conn ) {
+        rc = sqlite3_prepare_v2(THE_DB->db_conn, "SELECT ip_entity FROM firewall_block_now", -1, &query, NULL);
+        if ( rc == SQLITE_OK ) {  
+            rc = sqlite3_step(query);
+            if ( rc == SQLITE_ROW ) {
+                new_enum = (db_instance_sqlite3_blocklist_enum_t*)malloc(sizeof(db_instance_sqlite3_blocklist_enum_t));
+                if ( new_enum ) {
+                    new_enum->query = query;
+                    new_enum->is_done = false;
+                    new_enum->is_first = true;
+                    
+                    new_enum->base.next = __db_instance_sqlite3_blocklist_enum_next;
+                    new_enum->base.close = __db_instance_sqlite3_blocklist_enum_close;
+                    
+                    DEBUG("Database:  blocklist enum:  opened enumerator %p", new_enum);
+                }
+            } else {
+                INFO("Database:  blocklist enum:  no records in block list");
+            }
+            if ( ! new_enum && query ) sqlite3_finalize(query);
+        } else {
+            ERROR("Database:  blocklist enum:  failed to execute block list query:  %d", rc);
+        }
+    }
+    return (struct db_blocklist_enum*)new_enum;
 }

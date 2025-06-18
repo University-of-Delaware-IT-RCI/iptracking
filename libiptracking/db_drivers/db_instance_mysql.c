@@ -7,7 +7,7 @@
  */
 
 #include <mysql.h>
-#include <server/mysql_version.h>
+#include <mysql_version.h>
 
 //
 
@@ -46,6 +46,7 @@ static void __db_instance_mysql_summarize_to_log(db_instance_t *the_db);
 static bool __db_instance_mysql_open(db_instance_t *the_db, const char **error_msg);
 static bool __db_instance_mysql_close(db_instance_t *the_db, const char **error_msg);
 static bool __db_instance_mysql_log_one_event(db_instance_t *the_db, log_data_t *the_event, const char **error_msg);
+static struct db_blocklist_enum* __db_instance_mysql_blocklist_enum_open(db_instance_t *the_db);
 
 //
 
@@ -58,7 +59,10 @@ static db_driver_callbacks_t    db_driver_mysql_callbacks = {
         .summarize_to_log = __db_instance_mysql_summarize_to_log,
         .open = __db_instance_mysql_open,
         .close = __db_instance_mysql_close,
-        .log_one_event = __db_instance_mysql_log_one_event
+        .log_one_event = __db_instance_mysql_log_one_event,
+        .blocklist_enum_open = __db_instance_mysql_blocklist_enum_open,
+        
+        .blocklist_async_notification_toggle = NULL
     };
     
 //
@@ -274,38 +278,43 @@ __db_instance_mysql_open(
             return false;
         }
         THE_DB->is_connected = true;
-        DEBUG("Database: connection okay, preparing query");  
         
-        // Allocate a prepared statment:
-        THE_DB->log_statement = mysql_stmt_init(&THE_DB->db_handle);
-        if ( ! THE_DB->log_statement ) {
-            if ( error_msg ) *error_msg = __db_instance_mysql_copy_error(THE_DB, mysql_error(&THE_DB->db_handle));
-            mysql_close(&THE_DB->db_handle);
-            THE_DB->is_connected = false;
-            return false;
+        if ( (THE_DB->base.options & db_options_no_pam_logging) == db_options_no_pam_logging ) {
+            DEBUG("Database: connection okay"); 
+        } else {
+            DEBUG("Database: connection okay, preparing query");  
+            
+            // Allocate a prepared statment:
+            THE_DB->log_statement = mysql_stmt_init(&THE_DB->db_handle);
+            if ( ! THE_DB->log_statement ) {
+                if ( error_msg ) *error_msg = __db_instance_mysql_copy_error(THE_DB, mysql_error(&THE_DB->db_handle));
+                mysql_close(&THE_DB->db_handle);
+                THE_DB->is_connected = false;
+                return false;
+            }
+            
+            // Prepare the statement:
+            rc = mysql_stmt_prepare(THE_DB->log_statement, db_mysql_log_stmt_query_str, -1);
+            if  ( rc != 0 ) {
+                if ( error_msg ) *error_msg = __db_instance_mysql_copy_error(THE_DB, mysql_error(&THE_DB->db_handle));
+                mysql_stmt_close(THE_DB->log_statement);
+                THE_DB->log_statement = NULL;
+                mysql_close(&THE_DB->db_handle);
+                THE_DB->is_connected = false;
+                return false;
+            }
+            
+            // Check the parameter count:
+            if ( mysql_stmt_param_count(THE_DB->log_statement) != db_mysql_log_stmt_nparams ) {
+                if ( error_msg ) *error_msg = __db_instance_mysql_copy_error(THE_DB, "Number of query parameters in prepared statement does not match expected number of parameters");
+                mysql_stmt_close(THE_DB->log_statement);
+                THE_DB->log_statement = NULL;
+                mysql_close(&THE_DB->db_handle);
+                THE_DB->is_connected = false;
+                return false;
+            }
+            DEBUG("Database: logging query prepared");
         }
-        
-        // Prepare the statement:
-        rc = mysql_stmt_prepare(THE_DB->log_statement, db_mysql_log_stmt_query_str, -1);
-        if  ( rc != 0 ) {
-            if ( error_msg ) *error_msg = __db_instance_mysql_copy_error(THE_DB, mysql_error(&THE_DB->db_handle));
-            mysql_stmt_close(THE_DB->log_statement);
-            THE_DB->log_statement = NULL;
-            mysql_close(&THE_DB->db_handle);
-            THE_DB->is_connected = false;
-            return false;
-        }
-        
-        // Check the parameter count:
-        if ( mysql_stmt_param_count(THE_DB->log_statement) != db_mysql_log_stmt_nparams ) {
-            if ( error_msg ) *error_msg = __db_instance_mysql_copy_error(THE_DB, "Number of query parameters in prepared statement does not match expected number of parameters");
-            mysql_stmt_close(THE_DB->log_statement);
-            THE_DB->log_statement = NULL;
-            mysql_close(&THE_DB->db_handle);
-            THE_DB->is_connected = false;
-            return false;
-        }
-        DEBUG("Database: logging query prepared");
     }
     return true;
 }
@@ -389,4 +398,115 @@ __db_instance_mysql_log_one_event(
         return true;
     }
     return false;
+}
+
+//
+
+typedef struct {
+    db_blocklist_enum_t     base;
+    //
+    MYSQL_STMT              *query;
+    
+    MYSQL_BIND              bind[1];
+    char                    bind_str[256];
+    unsigned long           bind_length;
+    my_bool                 bind_is_null, bind_error;
+  
+    bool                    is_done;
+} db_instance_mysql_blocklist_enum_t;
+
+//
+
+const char*
+__db_instance_mysql_blocklist_enum_next(
+    db_blocklist_enum_ref   the_enum
+)
+{
+    db_instance_mysql_blocklist_enum_t  *THE_ENUM = (db_instance_mysql_blocklist_enum_t*)the_enum;
+    int                                 rc;
+    
+    if ( THE_ENUM && ! THE_ENUM->is_done ) {
+        rc = mysql_stmt_fetch(THE_ENUM->query);
+        if ( rc == 1 || rc == MYSQL_NO_DATA ) {
+            THE_ENUM->is_done = true;
+        } else {
+            if ( ! THE_ENUM->bind_is_null && THE_ENUM->bind_length ) return (const char*)THE_ENUM->bind_str;
+        }
+    }
+    return NULL;
+}
+
+//
+
+void
+__db_instance_mysql_blocklist_enum_close(
+    db_blocklist_enum_ref   the_enum
+)
+{
+    db_instance_mysql_blocklist_enum_t  *THE_ENUM = (db_instance_mysql_blocklist_enum_t*)the_enum;
+    
+    if ( THE_ENUM ) {
+        DEBUG("Database:  blocklist enum:  close enumerator %p", THE_ENUM);
+        if ( THE_ENUM->query ) mysql_stmt_close(THE_ENUM->query);
+        free((void*)THE_ENUM);
+    }
+}
+
+//
+
+struct db_blocklist_enum*
+__db_instance_mysql_blocklist_enum_open(
+    db_instance_t   *the_db
+)
+{
+    db_instance_mysql_t                 *THE_DB = (db_instance_mysql_t*)the_db;
+    db_instance_mysql_blocklist_enum_t  *new_enum = NULL;
+    MYSQL_STMT                          *query = NULL;
+    int                                 rc;
+    
+    if ( THE_DB->is_connected ) {
+        // Allocate a prepared statment:
+        query = mysql_stmt_init(&THE_DB->db_handle);
+        if ( query ) {
+            rc = mysql_stmt_prepare(query, "SELECT ip_entity FROM firewall_block_now", -1);
+            if ( rc == 0 ) {
+                new_enum = (db_instance_mysql_blocklist_enum_t*)malloc(sizeof(db_instance_mysql_blocklist_enum_t));
+                if ( new_enum ) {
+                    new_enum->bind[0].buffer_type = MYSQL_TYPE_STRING;
+                    new_enum->bind[0].buffer = (char*)new_enum->bind_str;
+                    new_enum->bind[0].buffer_length = sizeof(new_enum->bind_str);
+                    new_enum->bind[0].is_null = &new_enum->bind_is_null;
+                    new_enum->bind[0].length = &new_enum->bind_length;
+                    new_enum->bind[0].error = &new_enum->bind_error;
+                    rc = mysql_stmt_bind_result(query, &new_enum->bind[0]);
+                    if ( rc == 0 ) {
+                        rc = mysql_stmt_execute(query);
+                        if ( rc == 0 ) {
+                            new_enum->query = query;
+                            new_enum->is_done = false;
+                            
+                            new_enum->base.next = __db_instance_mysql_blocklist_enum_next;
+                            new_enum->base.close = __db_instance_mysql_blocklist_enum_close;
+                    
+                            DEBUG("Database:  blocklist enum:  opened enumerator %p", new_enum);
+                        } else {
+                            ERROR("Database:  blocklist enum:  failed to execute block list query:  %d", rc);
+                            free((void*)new_enum);
+                            new_enum = NULL;
+                        }
+                    } else {
+                        ERROR("Database:  blocklist enum:  failed to bind result struct to block list query:  %d", rc);
+                        free((void*)new_enum);
+                        new_enum = NULL;
+                    }
+                }
+            } else {
+                ERROR("Database:  blocklist enum:  failed to prepare block list query:  %d", rc);
+            }
+            if ( ! new_enum && query ) mysql_stmt_close(query);
+        } else {
+            ERROR("Database:  blocklist enum:  failed to allocate block list query");
+        }
+    }
+    return (struct db_blocklist_enum*)new_enum;
 }

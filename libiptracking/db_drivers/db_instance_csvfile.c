@@ -39,7 +39,10 @@ static db_driver_callbacks_t    db_driver_csvfile_callbacks = {
         .summarize_to_log = __db_instance_csvfile_summarize_to_log,
         .open = __db_instance_csvfile_open,
         .close = __db_instance_csvfile_close,
-        .log_one_event = __db_instance_csvfile_log_one_event
+        .log_one_event = __db_instance_csvfile_log_one_event,
+        .blocklist_enum_open = NULL,
+        
+        .blocklist_async_notification_toggle = NULL
     };
     
 //
@@ -140,7 +143,9 @@ __db_instance_csvfile_open(
 {
     db_instance_csvfile_t   *THE_DB = (db_instance_csvfile_t*)the_db;
     
-    if ( ! THE_DB->fptr ) {
+    if ( (THE_DB->base.options & db_options_no_pam_logging) == db_options_no_pam_logging ) {
+        DEBUG("Database: no PAM logging enabled, database is non-functional"); 
+    } else if ( ! THE_DB->fptr ) {
         int                 rc;
         
         DEBUG("Database: connecting to file '%s'", THE_DB->filename);

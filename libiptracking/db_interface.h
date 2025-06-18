@@ -9,8 +9,8 @@
 #ifndef __DB_INTERFACE_H__
 #define __DB_INTERFACE_H__
 
-#include "iptracking-daemon.h"
-#include "log_queue.h"
+#include "iptracking.h"
+#include "log_data.h"
 #include "yaml_helpers.h"
 
 /*!
@@ -54,6 +54,16 @@ const char* db_driver_enumerate_drivers(db_driver_iterator_t *iterator);
 typedef struct db_instance * db_ref;
 
 /*!
+ * @enum database options
+ *
+ * Options that control database capabilities.
+ */
+enum {
+    db_options_no_pam_logging = 1 << 0,
+    db_options_no_firewall = 1 << 1
+};
+
+/*!
  * @function db_alloc
  *
  * Allocate and initialize a new database instance.  A pointer to the YAML
@@ -69,7 +79,7 @@ typedef struct db_instance * db_ref;
  *
  * All failures yield a return value of NULL.
  */
-db_ref db_alloc(const char *db_driver, yaml_document_t *config_doc, yaml_node_t *database_node);
+db_ref db_alloc(const char *db_driver, yaml_document_t *config_doc, yaml_node_t *database_node, unsigned int options);
 
 /*!
  * @function db_dealloc
@@ -139,5 +149,74 @@ bool db_close(db_ref the_db, const char **error_msg);
  * If successful, true is returned.
  */
 bool db_log_one_event(db_ref the_db, log_data_t *the_event, const char **error_msg);
+
+/*!
+ * @typedef db_blocklist_enum_ref
+ *
+ * Opaque pointer to a structure representing the enumeration
+ * of the firewall block list table.
+ */
+typedef const struct db_blocklist_enum * db_blocklist_enum_ref;
+
+/*!
+ * @function db_blocklist_enum_open
+ *
+ * Query the firewall block list table and return an enumeration context
+ * for the results.  If the query fails or no results were produced, then
+ * NULL will be returned.
+ *
+ * The caller is ultimately reponsible for releasing the returned
+ * enumeration context using the db_blocklist_enum_close() function.
+ */
+db_blocklist_enum_ref db_blocklist_enum_open(db_ref the_db);
+
+/*!
+ * @function db_blocklist_enum_next
+ *
+ * Return the next result from a firewall block list query.  If no more
+ * results exist, NULL is returned.
+ */
+const char* db_blocklist_enum_next(db_blocklist_enum_ref the_enum);
+
+/*!
+ * @function db_blocklist_enum_close
+ *
+ * Release a firewall block list query enumeration context.
+ */
+void db_blocklist_enum_close(db_blocklist_enum_ref the_enum);
+
+/*!
+ * @typedef db_blocklist_async_notification
+ *
+ * Type of a function that receives asynchronous notification of
+ * modifications to the firewall block list.  The callback receives
+ * an ip_entity enumerator ready to be iterated for the list of
+ * blocked subnets/addresses.
+ *
+ * The context argument is set when the callback is registered.
+ */
+typedef void (*db_blocklist_async_notification)(db_blocklist_enum_ref eblocklist, const void *context);
+
+/*!
+ * @function db_has_blocklist_async_notification
+ *
+ * Returns true if the database driver supports asynchronous notifications
+ * of data changes.
+ */
+bool db_has_blocklist_async_notification(db_ref the_db);
+
+/*!
+ * @function db_blocklist_async_notification_register
+ *
+ * Register a callback function to handle asynchronous notifications
+ * of data changes.
+ *
+ * The <context> is used to pass arbitrary data to the callback
+ * function.
+ *
+ * Pass NULL for <the_notify> to unregister a previously-registered
+ * callback.
+ */
+void db_blocklist_async_notification_register(db_ref the_db, db_blocklist_async_notification the_notify, const void *context);
 
 #endif /* __DB_INTERFACE_H__ */

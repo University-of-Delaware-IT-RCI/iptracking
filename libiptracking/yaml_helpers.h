@@ -9,7 +9,7 @@
 #ifndef __YAML_HELPERS_H__
 #define __YAML_HELPERS_H__
 
-#include "iptracking-daemon.h"
+#include "iptracking.h"
 
 /*!
  * @function yaml_helper_doc_node_at_path

@@ -7,6 +7,7 @@
  */
 
 #include "db_interface.h"
+#include "logging.h"
 
 //
 
@@ -17,6 +18,8 @@ typedef void (*db_driver_summarize_to_log)(struct db_instance *the_db);
 typedef bool (*db_driver_open)(struct db_instance *the_db, const char **error_msg);
 typedef bool (*db_driver_close)(struct db_instance *the_db, const char **error_msg);
 typedef bool (*db_driver_log_one_event)(struct db_instance *the_db, log_data_t *the_event, const char **error_msg);
+typedef struct db_blocklist_enum* (*db_driver_blocklist_enum_open)(struct db_instance *the_db);
+typedef void (*db_driver_blocklist_async_notification_toggle)(struct db_instance *the_db, bool start_if_true);
 
 typedef struct {
     const char                          *driver_name;
@@ -31,20 +34,29 @@ typedef struct {
     db_driver_open                      open;
     db_driver_close                     close;
     db_driver_log_one_event             log_one_event;
+    db_driver_blocklist_enum_open       blocklist_enum_open;
+    
+    db_driver_blocklist_async_notification_toggle   blocklist_async_notification_toggle;
 } db_driver_callbacks_t;
 
 //
 
 typedef struct db_instance {
-    db_driver_callbacks_t   *driver_callbacks;
+    db_driver_callbacks_t           *driver_callbacks;
+    unsigned int                    options;
+    
+    bool                            blocklist_async_notification_is_running;
+    pthread_mutex_t                 blocklist_async_notification_lock;
+    db_blocklist_async_notification blocklist_async_notification_callback;
+    const void                      *blocklist_async_notification_context;
 } db_instance_t;
 
 //
 
 static db_instance_t*
 __db_instance_alloc(
-    db_driver_callbacks_t *driver_callbacks,
-    size_t              actual_size
+    db_driver_callbacks_t   *driver_callbacks,
+    size_t                  actual_size
 )
 {
     db_instance_t       *new_db_instance = NULL;
@@ -54,10 +66,25 @@ __db_instance_alloc(
         if ( new_db_instance ) {
             memset(new_db_instance, 0, actual_size);
             new_db_instance->driver_callbacks = driver_callbacks;
+            
+            if ( driver_callbacks->blocklist_async_notification_toggle ) {
+                pthread_mutex_init(&new_db_instance->blocklist_async_notification_lock, NULL);
+            }
         }
     }
     return new_db_instance;
 }
+
+//
+
+typedef const char* (*db_driver_blocklist_enum_next)(db_blocklist_enum_ref the_enum);
+typedef void (*db_driver_blocklist_enum_close)(db_blocklist_enum_ref the_enum);
+typedef struct db_blocklist_enum {
+    db_ref                          parent_db;
+    
+    db_driver_blocklist_enum_next   next;
+    db_driver_blocklist_enum_close  close;
+} db_blocklist_enum_t;
 
 //
 
@@ -82,6 +109,9 @@ static db_driver_callbacks_t* __db_drivers[] = {
 #endif
 #ifdef HAVE_SQLITE3
         &db_driver_sqlite3_callbacks,
+#endif
+#ifdef HAVE_MYSQL
+        &db_driver_mysql_callbacks,
 #endif
         NULL
     };
@@ -138,10 +168,12 @@ db_ref
 db_alloc(
     const char      *db_driver,
     yaml_document_t *config_doc,
-    yaml_node_t     *database_node
+    yaml_node_t     *database_node,
+    unsigned int    options
 )
 {
     db_driver_callbacks_t   *driver_callbacks = NULL;
+    db_ref                  new_db = NULL;
     
     if ( ! db_driver ) {
         yaml_node_t         *prop_node = yaml_helper_doc_node_at_path(config_doc, database_node, "driver-name");
@@ -153,9 +185,11 @@ db_alloc(
         db_driver = yaml_helper_get_scalar_value(prop_node);
     }
     
-    driver_callbacks = __db_driver_lookup(db_driver);
-    
-    return (driver_callbacks) ? driver_callbacks->alloc(config_doc, database_node) : NULL;
+    if ( (driver_callbacks = __db_driver_lookup(db_driver)) != NULL ) {
+        new_db = driver_callbacks->alloc(config_doc, database_node);
+        if ( new_db ) new_db->options = options;
+    }
+    return new_db;
 }
 
 //
@@ -167,6 +201,11 @@ db_dealloc(
 {
     if ( the_db ) {
         the_db->driver_callbacks->close(the_db, NULL);
+
+        if ( the_db->driver_callbacks->blocklist_async_notification_toggle ) {
+            pthread_mutex_destroy(&the_db->blocklist_async_notification_lock);
+        }
+
         the_db->driver_callbacks->dealloc(the_db);
     }
 }
@@ -199,12 +238,13 @@ db_summarize_to_log(
 
 bool
 db_open(
-    db_ref      the_db,
-    const char  **error_msg
+    db_ref          the_db,
+    const char      **error_msg
 )
 {
-    if ( the_db ) return the_db->driver_callbacks->open(the_db, error_msg);
-    
+    if ( the_db ) {
+        return the_db->driver_callbacks->open(the_db, error_msg);
+    }
     if ( error_msg ) *error_msg = "Invalid database (NULL)";
     return false;
 }
@@ -232,8 +272,80 @@ db_log_one_event(
     const char  **error_msg
 )
 {
-    if ( the_db ) return the_db->driver_callbacks->log_one_event(the_db, the_event, error_msg);
+    if ( ((the_db->options & db_options_no_pam_logging) == 0) && the_db ) return the_db->driver_callbacks->log_one_event(the_db, the_event, error_msg);
     
     if ( error_msg ) *error_msg = "Invalid database (NULL)";
     return false;
+}
+
+//
+
+db_blocklist_enum_ref
+db_blocklist_enum_open(db_ref the_db)
+{
+    db_blocklist_enum_t     *new_enum = NULL;
+    
+    if ( ((the_db->options & db_options_no_firewall) == 0) && the_db->driver_callbacks->blocklist_enum_open ) {
+        new_enum = the_db->driver_callbacks->blocklist_enum_open(the_db);
+        if ( new_enum ) {
+            new_enum->parent_db = the_db;
+        }
+    }
+    return (db_blocklist_enum_ref)new_enum;
+}
+
+//
+
+const char*
+db_blocklist_enum_next(
+    db_blocklist_enum_ref   the_enum
+)
+{
+    if ( the_enum ) return the_enum->next(the_enum);
+    return NULL;
+}
+
+//
+
+void
+db_blocklist_enum_close(
+    db_blocklist_enum_ref   the_enum
+)
+{
+    if ( the_enum ) the_enum->close(the_enum);
+}
+
+//
+
+bool
+db_has_blocklist_async_notification(
+    db_ref  the_db
+)
+{
+    return (the_db && the_db->driver_callbacks->blocklist_async_notification_toggle) ? true : false;
+}
+
+//
+
+void
+db_blocklist_async_notification_register(
+    db_ref                          the_db,
+    db_blocklist_async_notification the_notify,
+    const void                      *context
+)
+{
+    if ( the_db && the_db->driver_callbacks->blocklist_async_notification_toggle ) {
+        bool                        need_start;
+        
+        pthread_mutex_lock(&the_db->blocklist_async_notification_lock);
+        need_start = (the_db->blocklist_async_notification_callback == NULL);
+        if ( (the_db->blocklist_async_notification_callback = the_notify) == NULL ) {
+            the_db->blocklist_async_notification_context = NULL;
+            the_db->driver_callbacks->blocklist_async_notification_toggle(the_db, false);
+        } else {
+            the_db->blocklist_async_notification_context = context;
+            if ( need_start ) the_db->driver_callbacks->blocklist_async_notification_toggle(the_db, true);
+        }
+        pthread_mutex_unlock(&the_db->blocklist_async_notification_lock);
+    }
 }

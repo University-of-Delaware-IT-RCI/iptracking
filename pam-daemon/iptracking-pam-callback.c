@@ -6,8 +6,8 @@
  *
  */
 
-#include "iptracking-daemon.h"
-#include "log_queue.h"
+#include "iptracking.h"
+#include "log_data.h"
 
 #include <signal.h>
 #include <sys/socket.h>

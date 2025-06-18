@@ -1,7 +1,13 @@
+/*
+ * iptracking.h
+ *
+ * Master header file for iptracking support library
+ * and daemons.
+ *
+ */
 
-
-#ifndef __IPTRACKING_DAEMON_H__
-#define __IPTRACKING_DAEMON_H__
+#ifndef __IPTRACKING_H__
+#define __IPTRACKING_H__
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +23,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-
 #include <yaml.h>
 #include <pthread.h>
 
@@ -82,4 +87,4 @@
 #define SOCKET_DEFAULT_BACKLOG @SOCKET_DEFAULT_BACKLOG@
 #define SOCKET_DEFAULT_POLL_INTERVAL @SOCKET_DEFAULT_POLL_INTERVAL@
 
-#endif /* __IPTRACKING_DAEMON_H__ */
+#endif /* __IPTRACKING_H__ */

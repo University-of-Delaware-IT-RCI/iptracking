@@ -6,9 +6,7 @@
  *
  */
 
-#include "iptracking-daemon.h"
 #include "logging.h"
-
 #include <stdarg.h>
 
 //

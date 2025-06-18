@@ -1,36 +1,88 @@
 --
+-- Put all the PAM stuff into its own schema:
+--
+CREATE SCHEMA pam;
+
+--
 -- PAM event types we expect to be logged:
 --
-CREATE TYPE log_event_t AS ENUM ('unknown', 'auth', 'open_session', 'close_session');
+CREATE TYPE pam.log_event_t AS ENUM ('unknown', 'auth', 'open_session', 'close_session');
 --
 -- Each connection attempt gets logged as the source IP address and TCP
 -- port with the user identifier that was provided by the remote side.
 --
-CREATE TABLE inet_log (
+CREATE TABLE pam.inet_log (
     dst_ipaddr      INET NOT NULL,
     src_ipaddr      INET NOT NULL,
     src_port        INTEGER NOT NULL,
-    log_event       log_event_t NOT NULL DEFAULT 'unknown',
+    log_event       pam.log_event_t NOT NULL DEFAULT 'unknown',
     uid             TEXT NOT NULL,
     log_date        TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
-CREATE INDEX inet_log_dst_ipaddr ON inet_log(dst_ipaddr);
-CREATE INDEX inet_log_src_ipaddr ON inet_log(src_ipaddr);
-CREATE INDEX inet_log_uid ON inet_log(uid);
+CREATE INDEX pam_inet_log_dst_ipaddr ON pam.inet_log(dst_ipaddr);
+CREATE INDEX pam_inet_log_src_ipaddr ON pam.inet_log(src_ipaddr);
+CREATE INDEX pam_inet_log_uid ON pam.inet_log(uid);
+
+
+--
+-- Each open_session event triggers the logging of the event
+-- timestamp as the last known successful login of the user.
+-- Note that even if the incoming timestamp is BEFORE an extant
+-- tuple's last_event in this table, the new event's timestamp
+-- will be retained.
+--
+CREATE TABLE pam.last_session (
+    uid             TEXT UNIQUE NOT NULL,
+    first_event     TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    last_event      TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+CREATE INDEX pam_last_session_uid ON pam.last_session(uid);
+--
+-- This rule automates the update of last_session on inserts
+-- made to the inet_log table:
+--
+CREATE OR REPLACE RULE update_pam_last_session AS ON INSERT TO pam.inet_log
+    WHERE log_event = 'open_session'
+    DO ALSO INSERT INTO pam.last_session (uid, first_event, last_event)
+        VALUES (NEW.uid, NEW.log_date, NEW.log_date)
+        ON CONFLICT (uid) DO UPDATE SET last_event = EXCLUDED.last_event;
+--
+-- At any time the data currently present in the inet_log
+-- table can be used to update the last_session table.  This
+-- function does just that.
+--
+CREATE OR REPLACE FUNCTION pam.last_session_import() RETURNS INTEGER AS $$
+DECLARE
+    mtuple  RECORD;
+    nrecs   INTEGER;
+BEGIN
+    nrecs := 0;
+    FOR mtuple IN SELECT uid, log_date FROM pam.inet_log
+            WHERE log_event = 'open_session' ORDER BY log_date ASC
+    LOOP
+        INSERT INTO pam.last_session (uid, first_event, last_event)
+            VALUES (mtuple.uid, mtuple.log_date, mtuple.log_date)
+            ON CONFLICT (uid) DO UPDATE SET last_event = EXCLUDED.last_event;
+        nrecs := nrecs + 1;
+    END LOOP;
+    RETURN nrecs;
+END;
+$$ LANGUAGE plpgsql;
+
 
 --
 -- This table is present to provide a record layout for the fixed-prefix views
 -- and arbitrary-prefix generator function.  The ipaddr (type INET) field is
 -- replaced with an ipnet (type CIDR) field.
 --
-CREATE TABLE nets (
+CREATE TABLE pam.nets (
     dst_ipaddr      INET NOT NULL,
     ipnet           CIDR UNIQUE NOT NULL,
     log_count       INTEGER NOT NULL DEFAULT 1,
     start_date      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     end_date        TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
-CREATE TABLE agg_nets (
+CREATE TABLE pam.agg_nets (
     ipnet           CIDR UNIQUE NOT NULL,
     log_count       INTEGER NOT NULL DEFAULT 1,
     start_date      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -42,78 +94,78 @@ CREATE TABLE agg_nets (
 -- than create fixed-prefix views situated atop the ips view, we'll create
 -- them explicitly attached to the original data source.
 --
-CREATE VIEW ips AS
+CREATE OR REPLACE VIEW pam.ips AS
     SELECT dst_ipaddr, src_ipaddr AS ipaddr, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
-        FROM inet_log
+        FROM pam.inet_log
         GROUP BY dst_ipaddr, src_ipaddr;
-CREATE OR REPLACE VIEW nets_24 AS
+CREATE OR REPLACE VIEW pam.nets_24 AS
     SELECT  dst_ipaddr,
             network(set_masklen(src_ipaddr, 24)) AS ipnet,
             COUNT(*) AS log_count,
             MIN(log_date) AS start_date,
             MAX(log_date) AS end_date
-    FROM inet_log
+    FROM pam.inet_log
     GROUP BY dst_ipaddr, ipnet;
-CREATE OR REPLACE VIEW nets_16 AS
+CREATE OR REPLACE VIEW pam.nets_16 AS
     SELECT  dst_ipaddr,
             network(set_masklen(src_ipaddr, 16)) AS ipnet,
             COUNT(*) AS log_count,
             MIN(log_date) AS start_date,
             MAX(log_date) AS end_date
-    FROM inet_log
+    FROM pam.inet_log
     GROUP BY dst_ipaddr, ipnet;
-CREATE OR REPLACE VIEW nets_8 AS
+CREATE OR REPLACE VIEW pam.nets_8 AS
     SELECT  dst_ipaddr,
             network(set_masklen(src_ipaddr, 8)) AS ipnet,
             COUNT(*) AS log_count,
             MIN(log_date) AS start_date,
             MAX(log_date) AS end_date
-    FROM inet_log
+    FROM pam.inet_log
     GROUP BY dst_ipaddr, ipnet;
-CREATE OR REPLACE FUNCTION nets_view(prefix_len INTEGER) RETURNS SETOF nets
+CREATE OR REPLACE FUNCTION pam.nets_view(prefix_len INTEGER) RETURNS SETOF pam.nets
 AS $$
     SELECT  dst_ipaddr,
             network(set_masklen(src_ipaddr, prefix_len)) AS ipnet,
             COUNT(*) AS log_count,
             MIN(log_date) AS start_date,
             MAX(log_date) AS end_date
-    FROM inet_log
+    FROM pam.inet_log
     GROUP BY dst_ipaddr, ipnet;
 $$ LANGUAGE SQL;
 
 
-CREATE VIEW agg_ips AS
+CREATE OR REPLACE VIEW pam.agg_ips AS
     SELECT src_ipaddr AS ipaddr, COUNT(*) as log_count, MIN(log_date) AS start_date, MAX(log_date) AS end_date
-        FROM inet_log
+        FROM pam.inet_log
         GROUP BY src_ipaddr;
-CREATE OR REPLACE VIEW agg_nets_24 AS
+CREATE OR REPLACE VIEW pam.agg_nets_24 AS
     SELECT  network(set_masklen(src_ipaddr, 24)) AS ipnet,
             COUNT(*) AS log_count,
             MIN(log_date) AS start_date,
             MAX(log_date) AS end_date
-    FROM inet_log
+    FROM pam.inet_log
     GROUP BY ipnet;
-CREATE OR REPLACE VIEW agg_nets_16 AS
+CREATE OR REPLACE VIEW pam.agg_nets_16 AS
     SELECT  network(set_masklen(src_ipaddr, 16)) AS ipnet,
             COUNT(*) AS log_count,
             MIN(log_date) AS start_date,
             MAX(log_date) AS end_date
-    FROM inet_log
+    FROM pam.inet_log
     GROUP BY ipnet;
-CREATE OR REPLACE VIEW agg_nets_8 AS
+CREATE OR REPLACE VIEW pam.agg_nets_8 AS
     SELECT  network(set_masklen(src_ipaddr, 8)) AS ipnet,
             COUNT(*) AS log_count,
             MIN(log_date) AS start_date,
             MAX(log_date) AS end_date
-    FROM inet_log
+    FROM pam.inet_log
     GROUP BY ipnet;
-CREATE OR REPLACE FUNCTION agg_nets_view(prefix_len INTEGER) RETURNS SETOF agg_nets
+CREATE OR REPLACE FUNCTION pam.agg_nets_view(prefix_len INTEGER) RETURNS SETOF pam.agg_nets
 AS $$
     SELECT  network(set_masklen(src_ipaddr, prefix_len)) AS ipnet,
             COUNT(*) AS log_count,
             MIN(log_date) AS start_date,
             MAX(log_date) AS end_date
-    FROM inet_log
+    FROM pam.inet_log
     GROUP BY ipnet;
 $$ LANGUAGE SQL;
 
@@ -127,7 +179,7 @@ $$ LANGUAGE SQL;
 -- function could be modified to pre-flight the data and do the INSERT
 -- only when necessary (again, without any change to the daemon).
 --
-CREATE OR REPLACE FUNCTION log_one_event(
+CREATE OR REPLACE FUNCTION pam.log_one_event(
     in_dst_ipaddr   TEXT,
     in_src_ipaddr   TEXT,
     in_src_port     TEXT,
@@ -135,7 +187,7 @@ CREATE OR REPLACE FUNCTION log_one_event(
     in_uid          TEXT,
     in_log_date     TEXT
 ) RETURNS void AS $$
-    INSERT INTO inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date)
+    INSERT INTO pam.inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date)
         VALUES (in_dst_ipaddr::INET,
                 in_src_ipaddr::INET,
                 in_src_port :: INTEGER,
@@ -154,11 +206,11 @@ $$ LANGUAGE SQL;
 -- The conditional means we can't just do an SQL stored function
 -- and we need PL/pgSQL.
 --
-CREATE TABLE inet_filter (
+CREATE TABLE pam.inet_filter (
     deny_subnet     CIDR UNIQUE NOT NULL
 );
 --
-CREATE OR REPLACE FUNCTION log_one_event(
+CREATE OR REPLACE FUNCTION pam.log_one_event(
     in_dst_ipaddr   TEXT,
     in_src_ipaddr   TEXT,
     in_src_port     TEXT,
@@ -169,9 +221,9 @@ CREATE OR REPLACE FUNCTION log_one_event(
 DECLARE
     a_subnet RECORD;
 BEGIN
-    SELECT * INTO a_subnet FROM inet_filter WHERE in_src_ipaddr::INET << deny_subnet;
+    SELECT * INTO a_subnet FROM pam.inet_filter WHERE in_src_ipaddr::INET << deny_subnet;
     IF NOT FOUND THEN
-        INSERT INTO inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date)
+        INSERT INTO pam.inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date)
             VALUES (in_dst_ipaddr::INET,
                     in_src_ipaddr::INET,
                     in_src_port :: INTEGER,
@@ -186,12 +238,12 @@ $$ LANGUAGE plpgsql;
 -- Supplementary helper table:  map day-of-week integer to string
 -- forms
 --
-CREATE TABLE dow_to_text(
+CREATE TABLE pam.dow_to_text(
     dow_value       SMALLINT UNIQUE NOT NULL CHECK (dow_value >= 0 AND dow_value <= 6),
     long_form       TEXT UNIQUE NOT NULL,
     abbrev          TEXT UNIQUE NOT NULL
 );
-INSERT INTO dow_to_text VALUES
+INSERT INTO pam.dow_to_text VALUES
     (0, 'Sunday', 'Sun'),
     (1, 'Monday', 'Mon'),
     (2, 'Tuesday', 'Tue'),

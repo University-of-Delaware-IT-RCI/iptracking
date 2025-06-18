@@ -6,7 +6,6 @@
  *
  */
  
-#include "iptracking-daemon.h"
 #include "yaml_helpers.h"
 
 //
