@@ -171,6 +171,48 @@ AS $$
 $$ LANGUAGE SQL;
 
 --
+-- Relying on the combination of src/dst IP info, uid, and sshd pid,
+-- an open (unclosed) session consists of a set of auth+open_session events
+-- or just an open_session event.
+--
+CREATE OR REPLACE VIEW pam.open_sessions AS SELECT dst_ipaddr, src_ipaddr, src_port,
+    (CASE WHEN (events <@ '{auth,open_session}' AND events @> '{auth,open_session}') THEN 'password'
+          WHEN (events = '{open_session}') THEN 'key-based'
+          END) AS method,
+    sshd_pid, uid, start_date
+    FROM (SELECT dst_ipaddr, src_ipaddr, src_port,
+           ARRAY_AGG(log_event) AS events,
+           sshd_pid, uid,
+           MIN(log_date) AS start_date
+        FROM pam.inet_log
+        GROUP BY dst_ipaddr,src_ipaddr,src_port,sshd_pid,uid)
+    WHERE (events <@ '{auth,open_session}' AND events @> '{auth,open_session}')
+       OR (events = '{open_session}')
+    ORDER BY start_date ASC;
+
+--
+-- Relying on the combination of src/dst IP info, uid, and sshd pid,
+-- a completed session consists of a set of auth+open_session+close_session events
+-- or just open_session+close_session events.
+--
+CREATE OR REPLACE VIEW pam.completed_sessions AS SELECT dst_ipaddr, src_ipaddr, src_port,
+    (CASE WHEN (events <@ '{auth,open_session,close_session}' AND events @> '{auth,open_session,close_session}') THEN 'password'
+          WHEN (events <@ '{open_session,close_session}' AND events @> '{open_session,close_session}') THEN 'key-based'
+          END) AS method,
+    sshd_pid, uid, start_date, duration
+    FROM (SELECT dst_ipaddr, src_ipaddr, src_port,
+           ARRAY_AGG(log_event) AS events,
+           sshd_pid, uid,
+           MIN(log_date) AS start_date,
+           (MAX(log_date) - MIN(log_date)) AS duration
+        FROM pam.inet_log
+        GROUP BY dst_ipaddr,src_ipaddr,src_port,sshd_pid,uid)
+    WHERE (events <@ '{auth,open_session,close_session}' AND events @> '{auth,open_session,close_session}')
+       OR (events <@ '{open_session,close_session}' AND events @> '{open_session,close_session}')
+    ORDER BY start_date ASC;
+
+
+--
 -- Rather than have the daemon do INSERTs into the table, data
 -- injection is via this function.  If the internal structure of the
 -- table were to change, altering the INSERT query, this function
