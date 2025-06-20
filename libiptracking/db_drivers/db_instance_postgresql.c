@@ -314,7 +314,7 @@ __db_instance_postgresql_open(
         } else if ( (THE_DB->base.options & db_options_no_pam_logging) == db_options_no_pam_logging ) {
             DEBUG("Database: connection okay");  
         } else {
-            const char          *db_log_stmt_query = NULL;
+            char                *db_log_stmt_query = NULL;
             int                 db_log_stmt_query_len;
             const char          *schema = (THE_DB->pam_schema && *THE_DB->pam_schema) ? 
                                                     THE_DB->pam_schema : NULL;
@@ -474,7 +474,7 @@ __db_instance_postgresql_blocklist_enum_open(
     int                                     nrows;
     
     if ( THE_DB->db_conn ) {
-        const char          *db_blocklist_stmt_query = NULL;
+        char                *db_blocklist_stmt_query = NULL;
         int                 db_blocklist_stmt_query_len;
         const char          *schema= (THE_DB->firewall_schema && *THE_DB->firewall_schema) ? 
                                                 THE_DB->firewall_schema : NULL;
@@ -531,7 +531,7 @@ __db_instance_postgresql_blocklist_async_notification_thread(
     
     pgfd = PQsocket(THE_DB->db_conn);
     if ( pgfd >= 0 ) {
-        const char              *db_notify_stmt_query = NULL;
+        char                    *db_notify_stmt_query = NULL;
         int                     db_notify_stmt_query_len;
         PGresult                *qres;
         

@@ -9,6 +9,17 @@
 #ifndef __IPTRACKING_H__
 #define __IPTRACKING_H__
 
+//
+
+#cmakedefine HAVE_ASPRINTF
+#cmakedefine HAVE_ASPRINTF_GNU_SOURCE
+
+#ifdef HAVE_ASPRINTF_GNU_SOURCE
+#   define _GNU_SOURCE
+#endif
+
+//
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -25,6 +36,12 @@
 #include <fcntl.h>
 #include <yaml.h>
 #include <pthread.h>
+
+//
+
+#if ! defined HAVE_ASPRINTF && ! defined HAVE_ASPRINTF_GNU_SOURCE
+int asprintf(char **restrict strp, const char *restrict fmt, ...);
+#endif
 
 //
 

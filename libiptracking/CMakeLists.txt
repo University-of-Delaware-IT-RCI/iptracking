@@ -113,6 +113,30 @@ if (ENABLE_MYSQL_DRIVER)
 endif ()
 
 #
+# We want to use asprintf()
+#
+include(CheckSymbolExists)
+
+# Check for asprintf without any specific definitions
+check_symbol_exists(asprintf "stdio.h;stdlib.h" HAVE_ASPRINTF)
+
+# If asprintf is not found, try with _GNU_SOURCE
+if(NOT HAVE_ASPRINTF)
+    set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+    check_symbol_exists(asprintf "stdio.h;stdlib.h" HAVE_ASPRINTF_GNU_SOURCE)
+    unset(CMAKE_REQUIRED_DEFINITIONS) # Unset for subsequent checks
+endif()
+
+# Report the result
+if (HAVE_ASPRINTF)
+    message(STATUS "asprintf found.")
+elseif (HAVE_ASPRINTF_GNU_SOURCE)
+    message(STATUS "asprintf found with _GNU_SOURCE.")
+else ()
+    message(STATUS "asprintf not found.")
+endif ()
+
+#
 # Generate the shared header file with version info, other compile-time option
 # values, and all of the headers we'll include in general:
 #
@@ -137,12 +161,16 @@ set(LIBIPTRACKING_HEADERS
         log_data.h
         chartest.h
         "${CMAKE_CURRENT_BINARY_DIR}/iptracking.h")
-add_library(libiptracking STATIC
+set(LIBIPTRACKING_SOURCES
         logging.c
         chartest.c
         log_data.c
         yaml_helpers.c
         db_interface.c)
+if (NOT HAVE_ASPRINTF AND NOT HAVE_ASPRINTF_GNU_SOURCE)
+    list(LIBIPTRACKING_SOURCES APPEND asprintf.c)
+endif ()
+add_library(libiptracking STATIC ${LIBIPTRACKING_SOURCES})
 set_target_properties(libiptracking
         PROPERTIES ARCHIVE_OUTPUT_NAME "iptracking")
 set_target_properties(libiptracking

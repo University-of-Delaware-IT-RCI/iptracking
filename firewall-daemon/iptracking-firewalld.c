@@ -191,7 +191,7 @@ config_validate(
     if ( firewalld_ipset_name_production_isset && ! firewalld_ipset_name_rebuild_isset ) {
         // Append "_update" to the production name:
         firewalld_ipset_name_rebuild = NULL;
-        asprintf(&firewalld_ipset_name_rebuild, "%s_update", firewalld_ipset_name_production);
+        asprintf((char**)&firewalld_ipset_name_rebuild, "%s_update", firewalld_ipset_name_production);
     }
     
     INFO("                             check-interval = %lus", firewalld_check_interval);
