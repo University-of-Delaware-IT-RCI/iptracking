@@ -12,7 +12,6 @@ configure_file(iptracking-pamd.service.in iptracking-pamd.service)
 # database.
 #
 add_executable(iptracking-pamd
-        chartest.c
         log_queue.c
         iptracking-pamd.c)
 target_link_libraries(iptracking-pamd

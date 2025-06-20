@@ -22,6 +22,30 @@ static const char *configuration_filepath_default = CONFIGURATION_FILEPATH_DEFAU
 
 //
 
+static uint32_t firewalld_check_interval = FIREWALLD_CHECK_INTERVAL_DEFAULT;
+static const char *firewalld_ipset_name_production = FIREWALLD_IPSET_NAME_PRODUCTION_DEFAULT;
+static bool firewalld_ipset_name_production_isset = false;
+static const char *firewalld_ipset_name_rebuild = FIREWALLD_IPSET_NAME_REBUILD_DEFAULT;
+static bool firewalld_ipset_name_rebuild_isset = false;
+
+//
+
+bool
+__is_valid_ipset_name(
+    const char  *s
+)
+{
+    int         l = 0;
+    
+    while ( *s && (l <= 256) ) {
+        if ( ! isalnum(*s) && (*s != '_') ) return false;
+        s++, l++;
+    }
+    return ((l > 0) && (l <= 256));
+}
+
+//
+
 bool
 config_read_yaml_file(
     const char  *fpath,
@@ -47,6 +71,7 @@ config_read_yaml_file(
                 if ( root_node && (root_node->type == YAML_MAPPING_NODE) ) {
                     yaml_node_t     *node;
                     const char      *v;
+                    bool            had_prod_name = false;
                     
                     rc = true;
                     while ( 1 ) {
@@ -55,6 +80,54 @@ config_read_yaml_file(
                          */
                         if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "database")) ) {
                             *event_db = db_alloc(NULL, &config_doc, node, db_options_no_pam_logging);
+                        }
+                        
+                        /*
+                         * Check for the firewalld config sub-dict:
+                         */
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "firewalld")) ) {
+                            yaml_node_t     *firewall_node;
+                            
+                            /*
+                             * Check for the check interval:
+                             */
+                            if ( (firewall_node = yaml_helper_doc_node_at_path(&config_doc, node, "check-interval")) ) {
+                                if ( ! yaml_helper_get_scalar_uint32_value(firewall_node, &firewalld_check_interval) ) {
+                                    ERROR("Configuration: invalid check-interval value: %s", yaml_helper_get_scalar_value(firewall_node));
+                                    rc = false;
+                                    break;
+                                }
+                            }
+                            
+                            /*
+                             * Check for the production ipset name:
+                             */
+                            if ( (firewall_node = yaml_helper_doc_node_at_path(&config_doc, node, "ipset-name.production")) ) {
+                                const char  *s = yaml_helper_get_scalar_value(firewall_node);
+                                
+                                if ( ! s ) {
+                                    ERROR("Configuration: invalid ipset-name.production value: (empty string)");
+                                    rc = false;
+                                    break;
+                                }
+                                firewalld_ipset_name_production = s;
+                                firewalld_ipset_name_production_isset = true;
+                            }
+                            
+                            /*
+                             * Check for the production ipset name:
+                             */
+                            if ( (firewall_node = yaml_helper_doc_node_at_path(&config_doc, node, "ipset-name.rebuild")) ) {
+                                const char  *s = yaml_helper_get_scalar_value(firewall_node);
+                                
+                                if ( ! s ) {
+                                    ERROR("Configuration: invalid ipset-name.rebuild value: (empty string)");
+                                    rc = false;
+                                    break;
+                                }
+                                firewalld_ipset_name_rebuild = s;
+                                firewalld_ipset_name_rebuild_isset = true;
+                            }
                         }
                         break;
                     }
@@ -98,6 +171,33 @@ config_validate(
         return false;
     }
     
+    if (firewalld_check_interval < 120 ) {
+        ERROR("Configuration: invalid check-interval value: %lu < 120", firewalld_check_interval);
+        return false;
+    }
+        
+    if ( ! __is_valid_ipset_name(firewalld_ipset_name_production) ) {
+        ERROR("Configuration: invalid ipset-name.production value:  '%s'", firewalld_ipset_name_production);
+        return false;
+    }
+    if ( ! __is_valid_ipset_name(firewalld_ipset_name_rebuild) ) {
+        ERROR("Configuration: invalid ipset-name.rebuild value:  '%s'", firewalld_ipset_name_rebuild);
+        return false;
+    }
+    if ( strcmp(firewalld_ipset_name_rebuild, firewalld_ipset_name_production) == 0 ) {
+        ERROR("Configuration: invalid ipset-name.rebuild value: same as production value");
+        return false;
+    }
+    if ( firewalld_ipset_name_production_isset && ! firewalld_ipset_name_rebuild_isset ) {
+        // Append "_update" to the production name:
+        firewalld_ipset_name_rebuild = NULL;
+        asprintf(&firewalld_ipset_name_rebuild, "%s_update", firewalld_ipset_name_production);
+    }
+    
+    INFO("                             check-interval = %lus", firewalld_check_interval);
+    INFO("                      ipset-name.production = %s", firewalld_ipset_name_production);
+    INFO("                         ipset-name.rebuild = %s", firewalld_ipset_name_rebuild);
+    
     db_summarize_to_log(event_db);
     
     return true;
@@ -106,14 +206,17 @@ config_validate(
 //
 
 static struct option cli_options[] = {
-                   { "help",            no_argument,       0,  'h' },
-                   { "version",         no_argument,       0,  'V' },
-                   { "verbose",         no_argument,       0,  'v' },
-                   { "quiet",           no_argument,       0,  'q' },
-                   { "config",          required_argument, 0,  'c' },
-                   { NULL,              0,                 0,   0  }
+                   { "help",                    no_argument,       0,  'h' },
+                   { "version",                 no_argument,       0,  'V' },
+                   { "verbose",                 no_argument,       0,  'v' },
+                   { "quiet",                   no_argument,       0,  'q' },
+                   { "config",                  required_argument, 0,  'c' },
+                   { "check-interval",          required_argument, 0,  'i' },
+                   { "ipset-name-production",   required_argument, 0,  'p' },
+                   { "ipset-name-rebuild",      required_argument, 0,  'r' },
+                   { NULL,                      0,                 0,   0  }
                };
-static const char *cli_options_str = "hVvqc:";
+static const char *cli_options_str = "hVvqc:i:p:r:";
 
 //
 
@@ -129,16 +232,25 @@ usage(
         "usage:\n\n"
         "    %s {options}\n\n"
         "  options:\n\n"
-        "    -h/--help                  Show this information\n"
-        "    -V/--version               Display daemon version\n"
-        "    -v/--verbose               Increase level of printing\n"
-        "    -q/--quiet                 Decrease level of printing\n"
-        "    -c/--config <filepath>     Read configuration directives from the YAML file\n"
-        "                               at <filepath> (default: %s)\n"
+        "    -h/--help                          Show this information\n"
+        "    -V/--version                       Display daemon version\n"
+        "    -v/--verbose                       Increase level of printing\n"
+        "    -q/--quiet                         Decrease level of printing\n"
+        "    -c/--config <filepath>             Read configuration directives from the YAML file\n"
+        "                                       at <filepath> (default: %s)\n"
+        "    -i/--check-interval <int>          The maximum number of seconds the daemon will wait\n"
+        "                                       between ipset updates (default: %d)\n"
+        "    -p/--ipset-name-production <name>  The ipset name to use for the subnet/address set\n"
+        "                                       referenced by filter rules (default: %s)\n"
+        "    -r/--ipset-name-rebuild <name>     The ipset name to use for the subnet/address set\n"
+        "                                       for updates (default: %s)\n"
         "\n"
         "  database drivers:\n\n",
         exe,
-        configuration_filepath_default);
+        configuration_filepath_default,
+        firewalld_check_interval,
+        firewalld_ipset_name_production,
+        firewalld_ipset_name_rebuild);
     while ( (driver_name = db_driver_enumerate_drivers(&driver_iter)) ) printf("    - %s\n", driver_name);
     printf(
         "\n"
@@ -203,6 +315,32 @@ main(
     /* Load configuration: */
     if ( ! config_read_yaml_file(config_filepath, &the_db) ) exit(EINVAL);
     
+    /* Overrides from the command line: */
+    optind = 1;
+    while ( (opt_ch = getopt_long(argc, argv, cli_options_str, cli_options, NULL)) != -1 ) {
+        switch ( opt_ch ) {
+            case 'i': {
+                char        *endp = NULL;
+                long int    v = strtol(optarg, &endp, 0);
+                
+                if ( ! (endp > optarg) ) {
+                    fprintf(stderr, "ERROR:  invalid -i/--check-interval value: '%s'", optarg);
+                    exit(EINVAL);
+                }
+                firewalld_check_interval = v;
+                break;
+            }
+            case 'p':
+                firewalld_ipset_name_production = optarg;
+                firewalld_ipset_name_production_isset = true;
+                break;
+            case 'r':
+                firewalld_ipset_name_rebuild = optarg;
+                firewalld_ipset_name_rebuild_isset = true;
+                break;
+        }
+    }
+    
     /* Validate configuration: */
     if ( ! config_validate(the_db) ) exit(EINVAL);
     
@@ -211,9 +349,9 @@ main(
         ERROR("Database: unable to connect to database: %s",
             error_msg ? error_msg : "unknown");
     } else {
-        db_blocklist_async_notification_register(the_db, firewall_notify, NULL);
+        db_blocklist_async_notification_register(the_db, firewall_notify, NULL, &error_msg);
         sleep(120);
-        db_close(the_db, NULL);
+        db_close(the_db, &error_msg);
     }
     
     DEBUG("Terminating.");

@@ -109,3 +109,18 @@ For each unique UID, the aggregate number of close_session events are subtracted
 
 The WhoIs database is leveraged to turn each IP address into a registered organizational CIDR and country code.
 
+
+
+#### New "open sessions" query
+
+```
+SELECT * FROM (
+    SELECT dst_ipaddr, src_ipaddr, src_port,
+           ARRAY_AGG(log_event) AS events,
+           sshd_pid, uid,
+           (MAX(log_date) - MIN(log_date)) AS duration
+        FROM pam.inet_log
+        GROUP BY dst_ipaddr,src_ipaddr,src_port,sshd_pid,uid
+) WHERE events = ARRAY['auth'::pam.log_event_t,'open_session'::pam.log_event_t]
+     OR events = ARRAY['open_session'::pam.log_event_t];
+```

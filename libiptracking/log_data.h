@@ -92,7 +92,8 @@ typedef struct log_data {
     char        src_ipaddr[16]; /* ###.###.###.### */
     uint16_t    src_port;
     uint16_t    event;          /* event id from log_event */
-    char        uid[64];        /* various sizes */
+    int32_t     sshd_pid;       /* pid of the sshd */
+    char        uid[60];        /* various sizes */
     char        log_date[28];   /* ####-##-## ##:##:##±#### */
     /* 64 is a good choice for uid because on 64-bit LP each struct is
        16 + 16 + 2 + 2 + 64 + 28 = 128 bytes, or 4KiB = 32 of them */
@@ -121,7 +122,7 @@ bool log_data_is_valid(log_data_t *data);
  *
  * A parsable event string looks like:
  *
- *     [dst_ipaddr],[src_ipddr],[src_port],[event],[uid],[log_date]
+ *     [dst_ipaddr],[src_ipddr],[src_port],[event],[sshd_pid],[uid],[log_date]
  */
 bool log_data_parse(log_data_t *data, const char *p, size_t p_len, const char  **endptr);
 

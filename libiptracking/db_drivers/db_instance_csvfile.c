@@ -195,12 +195,19 @@ __db_instance_csvfile_log_one_event(
     if ( THE_DB->fptr ) {
         int         rc;
         
-        rc = fprintf(THE_DB->fptr, "%2$s%1$s%3$s%1$s%4$d%1$s%5$s%1$s%6$s%1$s%7$s\n",
+        rc = fprintf(THE_DB->fptr, "%2$s"
+                                   "%1$s%3$s"
+                                   "%1$s%4$d"
+                                   "%1$s%5$s"
+                                   "%1$s%6$ld"
+                                   "%1$s%7$s"
+                                   "%1$s%8$s\n",
                 THE_DB->delimiter ? THE_DB->delimiter : ",",
                 the_event->dst_ipaddr,
                 the_event->src_ipaddr,
                 the_event->src_port,
                 log_event_to_str(the_event->event),
+                (long int)the_event->sshd_pid,
                 the_event->uid,
                 the_event->log_date);
         if ( rc <= 0 ) {

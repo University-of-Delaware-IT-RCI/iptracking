@@ -59,6 +59,13 @@ set(SOCKET_DEFAULT_BACKLOG "5" CACHE STRING "Socket listen connection backlog (s
 set(SOCKET_DEFAULT_POLL_INTERVAL "90" CACHE STRING "Socket connection-polling timeout in seconds (see 'man 3 poll')")
 
 #
+# Firewall update interval:
+#
+set(FIREWALLD_CHECK_INTERVAL_DEFAULT "300" CACHE STRING "Maximum interval between ipset updates")
+set(FIREWALLD_IPSET_NAME_PRODUCTION_DEFAULT "iptracking_block" CACHE STRING "Name of ipset referenced by filtering rules")
+set(FIREWALLD_IPSET_NAME_REBUILD_DEFAULT "iptracking_block_update" CACHE STRING "Name of ipset for building updates")
+
+#
 # Find a threading package -- we demand pthreads!
 #
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -128,9 +135,12 @@ set(LIBIPTRACKING_HEADERS
         logging.h
         yaml_helpers.h
         log_data.h
+        chartest.h
         "${CMAKE_CURRENT_BINARY_DIR}/iptracking.h")
 add_library(libiptracking STATIC
         logging.c
+        chartest.c
+        log_data.c
         yaml_helpers.c
         db_interface.c)
 set_target_properties(libiptracking

@@ -26,6 +26,7 @@ CREATE TABLE inet_log_raw (
     log_event       TINYINT UNSIGNED NOT NULL DEFAULT 0
                     REFERENCES log_event_t(enum_id)
                     ON DELETE CASCADE,
+    sshd_pid        INT NOT NULL,
     uid             TEXT NOT NULL,
     log_date        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -159,6 +160,7 @@ CREATE PROCEDURE iptracking.log_one_event(
     IN in_src_ipaddr    TEXT,
     IN in_src_port      TEXT,
     IN in_log_event     TEXT,
+    IN in_sshd_pid      TEXT,
     IN in_uid           TEXT,
     IN in_log_date      TEXT
 )
@@ -168,6 +170,7 @@ BEGIN
                 INET_ATON(in_src_ipaddr),
                 CAST(in_src_port AS UNSIGNED INTEGER),
                 (SELECT enum_id FROM log_event_t WHERE label = in_log_event),
+                CAST(in_sshd_pid AS INT),
                 in_uid,
                 in_log_date);
 END $$

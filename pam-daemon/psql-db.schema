@@ -16,6 +16,7 @@ CREATE TABLE pam.inet_log (
     src_ipaddr      INET NOT NULL,
     src_port        INTEGER NOT NULL,
     log_event       pam.log_event_t NOT NULL DEFAULT 'unknown',
+    sshd_pid        INTEGER NOT NULL,
     uid             TEXT NOT NULL,
     log_date        TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
@@ -184,14 +185,16 @@ CREATE OR REPLACE FUNCTION pam.log_one_event(
     in_src_ipaddr   TEXT,
     in_src_port     TEXT,
     in_log_event    TEXT,
+    in_sshd_pid     TEXT,
     in_uid          TEXT,
     in_log_date     TEXT
 ) RETURNS void AS $$
-    INSERT INTO pam.inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date)
-        VALUES (in_dst_ipaddr::INET,
-                in_src_ipaddr::INET,
-                in_src_port :: INTEGER,
-                in_log_event::log_event_t,
+    INSERT INTO pam.inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, sshd_pid, uid, log_date)
+        VALUES (in_dst_ipaddr:: INET,
+                in_src_ipaddr:: INET,
+                in_src_port  :: INTEGER,
+                in_log_event :: log_event_t,
+                in_sshd_pid  :: INTEGER,
                 in_uid,
                 in_log_date::TIMESTAMP WITH TIME ZONE);
 $$ LANGUAGE SQL;
@@ -215,6 +218,7 @@ CREATE OR REPLACE FUNCTION pam.log_one_event(
     in_src_ipaddr   TEXT,
     in_src_port     TEXT,
     in_log_event    TEXT,
+    in_sshd_pid     TEXT,
     in_uid          TEXT,
     in_log_date     TEXT
 ) RETURNS void AS $$
@@ -223,11 +227,12 @@ DECLARE
 BEGIN
     SELECT * INTO a_subnet FROM pam.inet_filter WHERE in_src_ipaddr::INET << deny_subnet;
     IF NOT FOUND THEN
-        INSERT INTO pam.inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date)
-            VALUES (in_dst_ipaddr::INET,
-                    in_src_ipaddr::INET,
-                    in_src_port :: INTEGER,
-                    in_log_event::log_event_t,
+        INSERT INTO pam.inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, sshd_pid, uid, log_date)
+            VALUES (in_dst_ipaddr :: INET,
+                    in_src_ipaddr :: INET,
+                    in_src_port   :: INTEGER,
+                    in_log_event  :: log_event_t,
+                    in_sshd_pid   :: INTEGER,
                     in_uid,
                     in_log_date::TIMESTAMP WITH TIME ZONE);
     END IF;

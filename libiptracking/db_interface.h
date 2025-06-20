@@ -64,6 +64,14 @@ enum {
 };
 
 /*!
+ * @defined DB_OPTIONS_TEST
+ *
+ * Test if the bitmask V is set in options variable O.
+ */
+#define DB_OPTIONS_ISSET(O,V)    (((O) & (V)) == (V))
+#define DB_OPTIONS_NOTSET(O,V)    (((O) & (V)) != (V))
+
+/*!
  * @function db_alloc
  *
  * Allocate and initialize a new database instance.  A pointer to the YAML
@@ -88,6 +96,16 @@ db_ref db_alloc(const char *db_driver, yaml_document_t *config_doc, yaml_node_t 
  * first closed.  After this function is called <the_db> is no longer valid.
  */
 void db_dealloc(db_ref the_db);
+
+/*!
+ * @function db_get_last_error
+ *
+ * Returns a pointer to the last error message string retained by <the_db> 
+ * in the course of operation.
+ *
+ * The caller SHOULD NOT modify or free the returned pointer.
+ */
+const char* db_get_last_error(db_ref the_db);
 
 /*!
  * @function db_has_valid_configuration
@@ -168,7 +186,7 @@ typedef const struct db_blocklist_enum * db_blocklist_enum_ref;
  * The caller is ultimately reponsible for releasing the returned
  * enumeration context using the db_blocklist_enum_close() function.
  */
-db_blocklist_enum_ref db_blocklist_enum_open(db_ref the_db);
+db_blocklist_enum_ref db_blocklist_enum_open(db_ref the_db, const char **error_msg);
 
 /*!
  * @function db_blocklist_enum_next
@@ -203,7 +221,7 @@ typedef void (*db_blocklist_async_notification)(db_blocklist_enum_ref eblocklist
  * Returns true if the database driver supports asynchronous notifications
  * of data changes.
  */
-bool db_has_blocklist_async_notification(db_ref the_db);
+bool db_has_blocklist_async_notification(db_ref the_db, const char **error_msg);
 
 /*!
  * @function db_blocklist_async_notification_register
@@ -217,6 +235,6 @@ bool db_has_blocklist_async_notification(db_ref the_db);
  * Pass NULL for <the_notify> to unregister a previously-registered
  * callback.
  */
-void db_blocklist_async_notification_register(db_ref the_db, db_blocklist_async_notification the_notify, const void *context);
+bool db_blocklist_async_notification_register(db_ref the_db, db_blocklist_async_notification the_notify, const void *context, const char **error_msg);
 
 #endif /* __DB_INTERFACE_H__ */

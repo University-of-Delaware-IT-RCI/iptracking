@@ -12,8 +12,8 @@
 //
 
 #define DB_INSTANCE_POSTGRESQL_LOG_STMT_NAME_STR "log_one_event"
-#define DB_INSTANCE_POSTGRESQL_LOG_STMT_NPARAMS 6
-#define DB_INSTANCE_POSTGRESQL_LOG_STMT_QUERY_FORMAT "SELECT %s%slog_one_event($1, $2, $3, $4, $5, $6);"
+#define DB_INSTANCE_POSTGRESQL_LOG_STMT_NPARAMS 7
+#define DB_INSTANCE_POSTGRESQL_LOG_STMT_QUERY_FORMAT "SELECT %s%slog_one_event($1, $2, $3, $4, $5, $6, $7);"
 #define DB_INSTANCE_POSTGRESQL_BLOCKLIST_STMT_QUERY_FORMAT "SELECT ip_entity FROM %s%sblock_now"
 
 static const char   *db_postgresql_log_stmt_name = DB_INSTANCE_POSTGRESQL_LOG_STMT_NAME_STR;
@@ -83,8 +83,6 @@ typedef struct {
     //
     bool                is_notify_running;
     pthread_t           notify_thread;
-    //
-    const char          *last_error;
 } db_instance_postgresql_t;
 
 //
@@ -96,8 +94,8 @@ static void __db_instance_postgresql_summarize_to_log(db_instance_t *the_db);
 static bool __db_instance_postgresql_open(db_instance_t *the_db, const char **error_msg);
 static bool __db_instance_postgresql_close(db_instance_t *the_db, const char **error_msg);
 static bool __db_instance_postgresql_log_one_event(db_instance_t *the_db, log_data_t *the_event, const char **error_msg);
-static struct db_blocklist_enum* __db_instance_postgresql_blocklist_enum_open(db_instance_t *the_db);
-static void __db_instance_postgresql_blocklist_async_notification_toggle(struct db_instance *the_db, bool start_if_true);
+static struct db_blocklist_enum* __db_instance_postgresql_blocklist_enum_open(db_instance_t *the_db, const char **error_msg);
+static bool __db_instance_postgresql_blocklist_async_notification_toggle(struct db_instance *the_db, bool start_if_true, const char **error_msg);
 
 //
 
@@ -116,42 +114,6 @@ static db_driver_callbacks_t    db_driver_postgresql_callbacks = {
         .blocklist_async_notification_toggle = __db_instance_postgresql_blocklist_async_notification_toggle
     };
     
-//
-
-const char*
-__db_instance_postgresql_copy_error(
-    db_instance_postgresql_t    *the_db,
-    const char                  *error_msg
-)
-{
-    if ( the_db->last_error ) {
-        free((void*)the_db->last_error);
-        the_db->last_error = NULL;
-    }
-    if ( error_msg && *error_msg ) {
-        char        *ps = (char*)error_msg;
-        char        *pe;
-        
-        /* Skip past leading whitespace: */
-        while ( *ps && isspace(*ps) ) ps++;
-        
-        /* From that point, move ahead to the NUL terminator: */
-        pe = ps;
-        while ( *pe ) pe++;
-        
-        /* If we didn't go anywhere, the string is empty: */
-        if ( pe > ps ) {
-            /* Step back to character previous to NUL terminator: */
-            pe--;
-            while ( (pe > ps) && isspace(*pe) ) pe--;
-            
-            /* If we still have a string, copy it: */
-            if ( pe > ps ) the_db->last_error = strndup(ps, (pe - ps + 1));
-        }
-    }
-    return the_db->last_error;
-}
-
 //
 
 db_instance_t*
@@ -293,9 +255,6 @@ __db_instance_postgresql_dealloc(
     db_instance_t   *the_db
 )
 {
-    db_instance_postgresql_t    *THE_DB = (db_instance_postgresql_t*)the_db;
-    
-    if ( THE_DB->last_error ) free((void*)THE_DB->last_error);
 }
 
 //
@@ -378,7 +337,7 @@ __db_instance_postgresql_open(
                 if ( db_rc == PGRES_COMMAND_OK ) {
                     DEBUG("Database: logging query prepared");
                 } else {
-                    if ( error_msg ) *error_msg = __db_instance_postgresql_copy_error(THE_DB, PQerrorMessage(THE_DB->db_conn));;
+                    if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, PQerrorMessage(THE_DB->db_conn), -1);
                     return false;
                 }
             } else {
@@ -386,7 +345,7 @@ __db_instance_postgresql_open(
             }
         }
         if ( THE_DB->base.blocklist_async_notification_callback ) {
-            __db_instance_postgresql_blocklist_async_notification_toggle(the_db, true);
+            __db_instance_postgresql_blocklist_async_notification_toggle(the_db, true, error_msg);
         }
     }
     return true;
@@ -405,7 +364,7 @@ __db_instance_postgresql_close(
     if ( THE_DB->db_conn ) {
         DEBUG("Database: closing connection");
         if ( THE_DB->is_notify_running )
-            __db_instance_postgresql_blocklist_async_notification_toggle(the_db, false);
+            __db_instance_postgresql_blocklist_async_notification_toggle(the_db, false, error_msg);
         PQfinish(THE_DB->db_conn);
         THE_DB->db_conn = NULL;
     }
@@ -425,18 +384,20 @@ __db_instance_postgresql_log_one_event(
     
     if ( THE_DB->db_conn ) {
         const char*     param_values[DB_INSTANCE_POSTGRESQL_LOG_STMT_NPARAMS];
-        char            src_port_str[32];
+        char            src_port_str[32], sshd_pid_str[32];
         PGresult        *db_result;
         ExecStatusType  db_rc;
         
         snprintf(src_port_str, sizeof(src_port_str), "%hu", the_event->src_port);
+        snprintf(sshd_pid_str, sizeof(sshd_pid_str), "%ld", (long int)the_event->sshd_pid);
         
         param_values[0] = the_event->dst_ipaddr;
         param_values[1] = the_event->src_ipaddr;
         param_values[2] = src_port_str;
         param_values[3] = log_event_to_str(the_event->event);
-        param_values[4] = the_event->uid;
-        param_values[5] = the_event->log_date;
+        param_values[4] = sshd_pid_str;
+        param_values[5] = the_event->uid;
+        param_values[6] = the_event->log_date;
         db_result = PQexecPrepared(THE_DB->db_conn, db_postgresql_log_stmt_name, db_postgresql_log_stmt_nparams,
                             param_values, NULL, NULL, 0);
         db_rc = PQresultStatus(db_result);
@@ -444,16 +405,17 @@ __db_instance_postgresql_log_one_event(
         switch ( db_rc ) {
             case PGRES_COMMAND_OK:
             case PGRES_TUPLES_OK:
-                DEBUG("Database: logged { %s, %s, %s, %s, %hu, %s }",
+                DEBUG("Database: logged { %s, %s, %s, %ld, %s, %hu, %s }",
                     the_event->log_date,
                     log_event_to_str(the_event->event),
                     the_event->uid,
+                    (long int)the_event->sshd_pid,
                     the_event->src_ipaddr,
                     the_event->src_port,
                     the_event->dst_ipaddr);
                 return true;
             default: {
-                if ( error_msg ) *error_msg = __db_instance_postgresql_copy_error(THE_DB, PQerrorMessage(THE_DB->db_conn));
+                if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, PQerrorMessage(THE_DB->db_conn), -1);
                 break;
             }
         }
@@ -502,7 +464,8 @@ __db_instance_postgresql_blocklist_enum_close(
 
 struct db_blocklist_enum*
 __db_instance_postgresql_blocklist_enum_open(
-    db_instance_t   *the_db
+    db_instance_t   *the_db,
+    const char      **error_msg
 )
 {
     db_instance_postgresql_t                *THE_DB = (db_instance_postgresql_t*)the_db;
@@ -619,7 +582,7 @@ __db_instance_postgresql_blocklist_async_notification_thread(
                             
                             INFO("Database:  notification listener thread:  %d notification(s) waiting", nnotify);
                             pthread_mutex_lock(&THE_DB->base.blocklist_async_notification_lock);
-                            eblocklist = db_blocklist_enum_open((db_ref)the_db);
+                            eblocklist = db_blocklist_enum_open((db_ref)the_db, NULL);
                             if ( eblocklist ) {
                                 INFO("Database:  notification listener thread:  dispatching block list to callback");
                                 THE_DB->base.blocklist_async_notification_callback(
@@ -653,14 +616,16 @@ __db_instance_postgresql_blocklist_async_notification_thread(
     return NULL;
 }
 
-void
+bool
 __db_instance_postgresql_blocklist_async_notification_toggle(
     db_instance_t   *the_db,
-    bool            start_if_true
+    bool            start_if_true,
+    const char      **error_msg
 )
 {
     db_instance_postgresql_t    *THE_DB = (db_instance_postgresql_t*)the_db;    
     int                         rc;
+    bool                        out_result = false;
     
     if ( start_if_true ) {
         if ( ! THE_DB->is_notify_running ) {
@@ -674,6 +639,7 @@ __db_instance_postgresql_blocklist_async_notification_toggle(
                     (void*)the_db);
             if ( rc == 0 ) {
                 INFO("Database:  spawned notification listener thread");
+                out_result = true;
             } else {
                 THE_DB->is_notify_running = false;
                 ERROR("Database:  failed to spawn notification listener thread (rc = %d)", rc);
@@ -688,7 +654,9 @@ __db_instance_postgresql_blocklist_async_notification_toggle(
         rc = pthread_cancel(THE_DB->notify_thread);
         if ( rc == 0 ) {
             rc = pthread_join(THE_DB->notify_thread, &thread_result);
-            if ( rc != 0 ) {
+            if ( rc == 0 ) {
+                out_result = true;
+            } else {
                 ERROR("Database:  error during notification listener thread join (errno = %d)", rc);
             }
         } else {
@@ -698,4 +666,5 @@ __db_instance_postgresql_blocklist_async_notification_toggle(
     } else {
         DEBUG("Database:  notification listener thread already not running");
     }
+    return out_result;
 }

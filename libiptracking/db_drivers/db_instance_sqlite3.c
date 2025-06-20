@@ -10,9 +10,11 @@
 
 //
 
-#define DB_INSTANCE_SQLITE3_LOG_STMT_QUERY "INSERT INTO inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+#define DB_INSTANCE_SQLITE3_LOG_STMT_QUERY_STR "INSERT INTO inet_log (dst_ipaddr, src_ipaddr, src_port, log_event, uid, log_date) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+#define DB_INSTANCE_SQLITE3_BLOCKLIST_STMT_QUERY_STR "SELECT ip_entity FROM firewall_block_now"
 
-static const char   *db_sqlite3_log_stmt_query = DB_INSTANCE_SQLITE3_LOG_STMT_QUERY;
+static const char   *db_sqlite3_log_stmt_query_str = DB_INSTANCE_SQLITE3_LOG_STMT_QUERY_STR;
+static const char   *db_sqlite3_blocklist_stmt_query_str = DB_INSTANCE_SQLITE3_BLOCKLIST_STMT_QUERY_STR;
 
 //
 
@@ -24,8 +26,6 @@ typedef struct {
     //
     sqlite3             *db_conn;
     sqlite3_stmt        *db_query;
-    //
-    const char          *last_error;
 } db_instance_sqlite3_t;
 
 //
@@ -37,7 +37,7 @@ static void __db_instance_sqlite3_summarize_to_log(db_instance_t *the_db);
 static bool __db_instance_sqlite3_open(db_instance_t *the_db, const char **error_msg);
 static bool __db_instance_sqlite3_close(db_instance_t *the_db, const char **error_msg);
 static bool __db_instance_sqlite3_log_one_event(db_instance_t *the_db, log_data_t *the_event, const char **error_msg);
-static struct db_blocklist_enum* __db_instance_sqlite3_blocklist_enum_open(db_instance_t *the_db);
+static struct db_blocklist_enum* __db_instance_sqlite3_blocklist_enum_open(db_instance_t *the_db, const char **error_msg);
 
 //
 
@@ -56,42 +56,6 @@ static db_driver_callbacks_t    db_driver_sqlite3_callbacks = {
         .blocklist_async_notification_toggle = NULL
     };
     
-//
-
-const char*
-__db_instance_sqlite3_copy_error(
-    db_instance_sqlite3_t   *the_db,
-    const char              *error_msg
-)
-{
-    if ( the_db->last_error ) {
-        free((void*)the_db->last_error);
-        the_db->last_error = NULL;
-    }
-    if ( error_msg && *error_msg ) {
-        char        *ps = (char*)error_msg;
-        char        *pe;
-        
-        /* Skip past leading whitespace: */
-        while ( *ps && isspace(*ps) ) ps++;
-        
-        /* From that point, move ahead to the NUL terminator: */
-        pe = ps;
-        while ( *pe ) pe++;
-        
-        /* If we didn't go anywhere, the string is empty: */
-        if ( pe > ps ) {
-            /* Step back to character previous to NUL terminator: */
-            pe--;
-            while ( (pe > ps) && isspace(*pe) ) pe--;
-            
-            /* If we still have a string, copy it: */
-            if ( pe > ps ) the_db->last_error = strndup(ps, (pe - ps + 1));
-        }
-    }
-    return the_db->last_error;
-}
-
 //
 
 struct db_instance_sqlite3_flag {
@@ -258,7 +222,7 @@ __db_instance_sqlite3_open(
         DEBUG("Database: connecting to database");
         rc = sqlite3_open_v2(THE_DB->filename, &THE_DB->db_conn, THE_DB->flags, NULL);
         if ( rc != SQLITE_OK ) {
-            if ( error_msg ) *error_msg = __db_instance_sqlite3_copy_error(THE_DB, sqlite3_errstr(rc));
+            if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, sqlite3_errstr(rc), -1);
             return false;
         }
         
@@ -266,9 +230,9 @@ __db_instance_sqlite3_open(
             DEBUG("Database: connection okay"); 
         } else {
             DEBUG("Database: connection okay, preparing query");
-            rc = sqlite3_prepare_v2(THE_DB->db_conn, db_sqlite3_log_stmt_query, -1, &THE_DB->db_query, NULL);
+            rc = sqlite3_prepare_v2(THE_DB->db_conn, db_sqlite3_log_stmt_query_str, -1, &THE_DB->db_query, NULL);
             if ( rc != SQLITE_OK ) {
-                if ( error_msg ) *error_msg = __db_instance_sqlite3_copy_error(THE_DB, sqlite3_errstr(rc));
+                if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, sqlite3_errstr(rc), -1);
                 return false;
             }
             DEBUG("Database: query prepared, database ready");
@@ -318,20 +282,21 @@ __db_instance_sqlite3_log_one_event(
         /* Bind event data to the query: */
         int                    rc  = sqlite3_bind_text(THE_DB->db_query, 1, the_event->dst_ipaddr, -1, SQLITE_STATIC);
         if ( rc == SQLITE_OK ) rc = sqlite3_bind_text(THE_DB->db_query, 2, the_event->src_ipaddr, -1, SQLITE_STATIC);
-        if ( rc == SQLITE_OK ) rc = sqlite3_bind_int(THE_DB->db_query, 3, the_event->src_port);
+        if ( rc == SQLITE_OK ) rc = sqlite3_bind_int(THE_DB->db_query, 3, (int)the_event->src_port);
         if ( rc == SQLITE_OK ) rc = sqlite3_bind_int(THE_DB->db_query, 4, the_event->event);
-        if ( rc == SQLITE_OK ) rc = sqlite3_bind_text(THE_DB->db_query, 5, the_event->uid, -1, SQLITE_STATIC);
-        if ( rc == SQLITE_OK ) rc = sqlite3_bind_text(THE_DB->db_query, 6, the_event->log_date, -1, SQLITE_STATIC);
+        if ( rc == SQLITE_OK ) rc = sqlite3_bind_int(THE_DB->db_query, 5, (int)the_event->sshd_pid);
+        if ( rc == SQLITE_OK ) rc = sqlite3_bind_text(THE_DB->db_query, 6, the_event->uid, -1, SQLITE_STATIC);
+        if ( rc == SQLITE_OK ) rc = sqlite3_bind_text(THE_DB->db_query, 7, the_event->log_date, -1, SQLITE_STATIC);
         
         if ( rc == SQLITE_OK ) {
             rc = sqlite3_step(THE_DB->db_query);
             if ( rc == SQLITE_DONE ) {
                 okay = true;
             } else {
-                if ( error_msg ) *error_msg = __db_instance_sqlite3_copy_error(THE_DB, sqlite3_errmsg(THE_DB->db_conn));
+                if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, sqlite3_errmsg(THE_DB->db_conn), -1);
             }
         } else {
-            if ( error_msg ) *error_msg = __db_instance_sqlite3_copy_error(THE_DB, sqlite3_errmsg(THE_DB->db_conn));
+            if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, sqlite3_errmsg(THE_DB->db_conn), -1);
         }
         sqlite3_clear_bindings(THE_DB->db_query);
         sqlite3_reset(THE_DB->db_query);
@@ -396,7 +361,8 @@ __db_instance_sqlite3_blocklist_enum_close(
 
 struct db_blocklist_enum*
 __db_instance_sqlite3_blocklist_enum_open(
-    db_instance_t   *the_db
+    db_instance_t   *the_db,
+    const char      **error_msg
 )
 {
     db_instance_sqlite3_t                   *THE_DB = (db_instance_sqlite3_t*)the_db;
@@ -405,7 +371,7 @@ __db_instance_sqlite3_blocklist_enum_open(
     int                                     rc;
     
     if ( THE_DB->db_conn ) {
-        rc = sqlite3_prepare_v2(THE_DB->db_conn, "SELECT ip_entity FROM firewall_block_now", -1, &query, NULL);
+        rc = sqlite3_prepare_v2(THE_DB->db_conn, db_sqlite3_blocklist_stmt_query_str, -1, &query, NULL);
         if ( rc == SQLITE_OK ) {  
             rc = sqlite3_step(query);
             if ( rc == SQLITE_ROW ) {

@@ -70,18 +70,20 @@ db_runloop(
         /* The log_queue_pop() function will block until a record becomes available: */
         if ( log_queue_pop(&context->lq, &data) ) {
             if ( db_log_one_event(context->db, &data, &error_msg) ) {
-                DEBUG("Database: logged data { %s, %s, %s, %s, %hu, %s }",
+                DEBUG("Database: logged data { %s, %s, %s, %ld, %s, %hu, %s }",
                     data.log_date,
                     log_event_to_str(data.event),
                     data.uid,
+                    (long int)data.sshd_pid,
                     data.src_ipaddr,
                     data.src_port,
                     data.dst_ipaddr);
             } else {
-                ERROR("Database: unable to log data { %s, %s, %s, %s, %hu, %s }: %s",
+                ERROR("Database: unable to log data { %s, %s, %s, %ld, %s, %hu, %s }: %s",
                     data.log_date,
                     log_event_to_str(data.event),
                     data.uid,
+                   (long int) data.sshd_pid,
                     data.src_ipaddr,
                     data.src_port,
                     data.dst_ipaddr,
@@ -572,6 +574,16 @@ main(
             case 'c':
                 config_filepath = optarg;
                 break;
+        }
+    }
+    
+    /* Load configuration: */
+    if ( ! config_read_yaml_file(config_filepath, &tc.db) ) exit(EINVAL);
+    
+    /* Overrides from CLI: */
+    optind = 1;
+    while ( (opt_ch = getopt_long(argc, argv, cli_options_str, cli_options, NULL)) != -1 ) {
+        switch ( opt_ch ) {
             case 'b': {
                 char    *endptr;
                 long    ival = strtol(optarg, &endptr, 0);
@@ -596,9 +608,6 @@ main(
             }
         }
     }
-    
-    /* Load configuration: */
-    if ( ! config_read_yaml_file(config_filepath, &tc.db) ) exit(EINVAL);
     
     /* Validate configuration: */
     if ( ! config_validate(tc.db) ) exit(EINVAL);
