@@ -65,6 +65,8 @@ typedef struct ipset_helper ipset_helper_t;
  * it.  It is up to the caller to ultimately terminate the interface
  * and reclaim all resources by calling <ipset_helper_fini()> on the
  * returned pointer.
+ *
+ * @return A non-NULL pointer if successful, otherwise a NULL pointer.
  */
 ipset_helper_t* ipset_helper_init(void);
 
@@ -84,11 +86,49 @@ int ipset_helper_fini(ipset_helper_t *an_ipset);
  * @return Zero on success, non-zero on failure.
  */
 int ipset_helper_create(ipset_helper_t *an_ipset, const char *set_name_rebuild);
+
+/*!
+ * @function ipset_helper_add
+ *
+ * Attempt to add subnet/address represented in C string <an_ip_entity>
+ * to the <set_name_rebuild> ipset.
+ *
+ * @return Zero on success, non-zero on failure.
+ */
 int ipset_helper_add(ipset_helper_t *an_ipset, const char *set_name_rebuild, const char *an_ip_entity);
+
+/*!
+ * @function ipset_helper_activate
+ *
+ * Attempt to activate the changes by swapping the <set_name_rebuild> ipset
+ * with the one named in <set_name_prod>.  If the <set_name_prod> does not
+ * exist then the <set_name_rebuild> is renamed to <set_name_prod>; if the
+ * swap was successful then the <set_name_rebuild> ipset is also destroyed.
+ *
+ * @return Zero on success, non-zero on failure.
+ */
 int ipset_helper_activate(ipset_helper_t *an_ipset, const char *set_name_rebuild, const char *set_name_prod);
+
+/*!
+ * @function ipset_helper_destroy
+ *
+ * Attempt to destroy the ipset named in <set_name>.
+ *
+ * @return Zero on success, non-zero on failure.
+ */
 int ipset_helper_destroy(ipset_helper_t *an_ipset, const char *set_name);
 
-
+/*!
+ * @function ipset_helper_last_error_message
+ *
+ * Retrieve a C string (with all leading- and trailing-whitespace removed
+ * describing the last error that occurred with the ipset operations.  The
+ * function uses a buffer that will be overwritten on each call to it, so
+ * do not rely on the returned pointer to contain the same data indefinitely.
+ *
+ * The pointer is owned by this API and should NOT be manipulated or free()'d
+ * by the caller.
+ */
 const char* ipset_helper_last_error_message(ipset_helper_t *an_ipset);
 
 #endif /* __IPSET_HELPER_H__ */
