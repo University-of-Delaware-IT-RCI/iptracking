@@ -285,15 +285,19 @@ firewall_notify(
         const char      *ip_entity;
         
         DEBUG("ipset update:  created ipset '%s'", CONTEXT->ipset_name_rebuild);
-        while ( (ip_entity = db_blocklist_enum_next(eblocklist)) ) {
-            if ( ip_entity && *ip_entity ) {
-                rc = ipset_helper_add(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, ip_entity);
-                if ( rc ) {
-                    WARN("ipset update:  failed to add '%s' to ipset '%s' (rc = %d): %s", ip_entity, CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
-                } else {
-                    DEBUG("ipset update:  added '%s' to ipset '%s'", ip_entity, CONTEXT->ipset_name_rebuild);
+        if ( eblocklist ) {
+            while ( (ip_entity = db_blocklist_enum_next(eblocklist)) ) {
+                if ( ip_entity && *ip_entity ) {
+                    rc = ipset_helper_add(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, ip_entity);
+                    if ( rc ) {
+                        WARN("ipset update:  failed to add '%s' to ipset '%s' (rc = %d): %s", ip_entity, CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+                    } else {
+                        DEBUG("ipset update:  added '%s' to ipset '%s'", ip_entity, CONTEXT->ipset_name_rebuild);
+                    }
                 }
             }
+        } else {
+            DEBUG("ipset update:  ipset '%s' will be empty", CONTEXT->ipset_name_prod);
         }
         rc = ipset_helper_activate(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, CONTEXT->ipset_name_prod);
         if ( rc == 0 ) {

@@ -209,7 +209,9 @@ void db_blocklist_enum_close(db_blocklist_enum_ref the_enum);
  * Type of a function that receives asynchronous notification of
  * modifications to the firewall block list.  The callback receives
  * an ip_entity enumerator ready to be iterated for the list of
- * blocked subnets/addresses.
+ * blocked subnets/addresses.  If the block list is empty then
+ * <eblocklist> will be NULL -- but the callback is still invoked
+ * so that it can ostensibly remove previously-blocked contents.
  *
  * The context argument is set when the callback is registered.
  */

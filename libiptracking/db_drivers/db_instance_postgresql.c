@@ -583,13 +583,11 @@ __db_instance_postgresql_blocklist_async_notification_thread(
                             INFO("Database:  notification listener thread:  %d notification(s) waiting", nnotify);
                             pthread_mutex_lock(&THE_DB->base.blocklist_async_notification_lock);
                             eblocklist = db_blocklist_enum_open((db_ref)the_db, NULL);
-                            if ( eblocklist ) {
-                                INFO("Database:  notification listener thread:  dispatching block list to callback");
-                                THE_DB->base.blocklist_async_notification_callback(
-                                        eblocklist,
-                                        THE_DB->base.blocklist_async_notification_context);
-                                db_blocklist_enum_close(eblocklist);
-                            }
+                            INFO("Database:  notification listener thread:  dispatching block list to callback");
+                            THE_DB->base.blocklist_async_notification_callback(
+                                    eblocklist,
+                                    THE_DB->base.blocklist_async_notification_context);
+                            if ( eblocklist ) db_blocklist_enum_close(eblocklist);
                             pthread_mutex_unlock(&THE_DB->base.blocklist_async_notification_lock);
                         }
                     }
