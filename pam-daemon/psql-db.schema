@@ -298,3 +298,38 @@ INSERT INTO pam.dow_to_text VALUES
     (4, 'Thursday', 'Thu'),
     (5, 'Friday', 'Fri'),
     (6, 'Saturday', 'Sat');
+
+
+--
+-- Views summarizing connection counts over specific recent periods of
+-- time.
+--
+CREATE OR REPLACE VIEW pam.src_ipaddr_counts_per_interval AS SELECT
+        src_ipaddr,
+        COUNT(CASE WHEN log_date >= now() - '0 00:05:00'::INTERVAL THEN 1 END) AS last_five,
+        COUNT(CASE WHEN log_date >= now() - '0 00:15:00'::INTERVAL THEN 1 END) AS last_fifteen,
+        COUNT(CASE WHEN log_date >= now() - '0 01:00:00'::INTERVAL THEN 1 END) AS last_hour,
+        COUNT(CASE WHEN log_date >= now() - '1 00:00:00'::INTERVAL THEN 1 END) AS last_day
+    FROM pam.inet_log
+    WHERE log_event = 'auth' AND log_date >= now() - '1 00:00:00'::INTERVAL
+    GROUP BY src_ipaddr;
+--
+CREATE OR REPLACE VIEW pam.nets_24_counts_per_interval AS SELECT
+        network(set_masklen(src_ipaddr, 24)) AS ipnet,
+        COUNT(CASE WHEN log_date >= now() - '0 00:05:00'::INTERVAL THEN 1 END) AS last_five,
+        COUNT(CASE WHEN log_date >= now() - '0 00:15:00'::INTERVAL THEN 1 END) AS last_fifteen,
+        COUNT(CASE WHEN log_date >= now() - '0 01:00:00'::INTERVAL THEN 1 END) AS last_hour,
+        COUNT(CASE WHEN log_date >= now() - '1 00:00:00'::INTERVAL THEN 1 END) AS last_day
+    FROM pam.inet_log
+    WHERE log_event = 'auth' AND log_date >= now() - '1 00:00:00'::INTERVAL
+    GROUP BY ipnet;
+--
+CREATE OR REPLACE VIEW pam.nets_16_counts_per_interval AS SELECT
+        network(set_masklen(src_ipaddr, 16)) AS ipnet,
+        COUNT(CASE WHEN log_date >= now() - '0 00:05:00'::INTERVAL THEN 1 END) AS last_five,
+        COUNT(CASE WHEN log_date >= now() - '0 00:15:00'::INTERVAL THEN 1 END) AS last_fifteen,
+        COUNT(CASE WHEN log_date >= now() - '0 01:00:00'::INTERVAL THEN 1 END) AS last_hour,
+        COUNT(CASE WHEN log_date >= now() - '1 00:00:00'::INTERVAL THEN 1 END) AS last_day
+    FROM pam.inet_log
+    WHERE log_event = 'auth' AND log_date >= now() - '1 00:00:00'::INTERVAL
+    GROUP BY ipnet;

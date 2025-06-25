@@ -137,3 +137,117 @@ BEGIN
     RETURN nrows;
 END;
 $$ LANGUAGE plpgsql;
+
+
+--
+-- Trigger function that is meant to catch excessive rate-based connection
+-- thresholds.
+--
+-- When we create the trigger, we'll ensure it only reacts to INSERT ops;
+-- we don't need to gate that in the function.  The trigger also needs to be
+-- an AFTER trigger.
+--
+CREATE OR REPLACE FUNCTION firewall.pam_ratebased_firewall_filter() RETURNS TRIGGER AS $$
+DECLARE
+    data            RECORD;
+    block           RECORD;
+    block_interval  INTERVAL;
+BEGIN
+    -- Check by IP address itself:
+    SELECT * INTO data FROM pam.src_ipaddr_counts_per_interval WHERE src_ipaddr = NEW.src_ipaddr;
+    IF FOUND THEN
+        -- Check for thresholds' being exceeded:
+        IF data.last_five >= 20 THEN
+            block_interval := '15 minutes'::INTERVAL;
+        ELSIF data.last_fifteen >= 60 THEN
+            block_interval := '1 hour'::INTERVAL;
+        ELSIF data.last_hour >= 80 THEN
+            block_interval := '1 day'::INTERVAL;
+        ELSIF data.last_day >= 150 THEN
+            block_interval := '1 week'::INTERVAL;
+        ELSE
+            block_interval := NULL;
+        END IF;
+        IF block_interval IS NOT NULL THEN
+            -- Insert a new block into the table, extending the end_date
+            -- if a tuple already exists:
+            SELECT * INTO block FROM firewall.block_raw WHERE ip_entity = NEW.src_ipaddr;
+            IF FOUND THEN
+                IF block.end_date IS NOT NULL THEN
+                    UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                        WHERE ip_entity = block.ip_entity;
+                END IF;
+            ELSE
+                INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
+                    VALUES (NEW.src_ipaddr, now(), now() + block_interval);
+            END IF;
+        END IF;
+    END IF;
+    
+    -- Check by /16 subnet:
+    SELECT * INTO data FROM pam.nets_16_counts_per_interval WHERE NEW.src_ipaddr << ipnet;
+    IF FOUND THEN
+        -- Check for thresholds' being exceeded:
+        IF data.last_five >= 80 THEN
+            block_interval := '1 hour'::INTERVAL;
+        ELSIF data.last_fifteen >= 150 THEN
+            block_interval := '12 hours'::INTERVAL;
+        ELSIF data.last_hour >= 200 THEN
+            block_interval := '1 day'::INTERVAL;
+        ELSIF data.last_day >= 350 THEN
+            block_interval := '1 week'::INTERVAL;
+        ELSE
+            block_interval := NULL;
+        END IF;
+        IF block_interval IS NOT NULL THEN
+            -- Insert a new block into the table, extending the end_date
+            -- if a tuple already exists:
+            SELECT * INTO block FROM firewall.block_raw WHERE data.ipnet << ip_entity;
+            IF FOUND THEN
+                IF block.end_date IS NOT NULL THEN
+                    UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                        WHERE ip_entity = block.ip_entity;
+                END IF;
+            ELSE
+                INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
+                    VALUES (data.ipnet, now(), now() + block_interval);
+            END IF;
+        END IF;
+    ELSE
+        -- Check by /24 subnet:
+        SELECT * INTO data FROM pam.nets_24_counts_per_interval WHERE NEW.src_ipaddr << ipnet;
+        IF FOUND THEN
+            -- Check for thresholds' being exceeded:
+            IF data.last_five >= 40 THEN
+                block_interval := '1 hour'::INTERVAL;
+            ELSIF data.last_fifteen >= 100 THEN
+                block_interval := '12 hours'::INTERVAL;
+            ELSIF data.last_hour >= 120 THEN
+                block_interval := '1 day'::INTERVAL;
+            ELSIF data.last_day >= 200 THEN
+                block_interval := '1 week'::INTERVAL;
+            ELSE
+                block_interval := NULL;
+            END IF;
+            IF block_interval IS NOT NULL THEN
+                -- Insert a new block into the table, extending the end_date
+                -- if a tuple already exists:
+                SELECT * INTO block FROM firewall.block_raw WHERE data.ipnet << ip_entity;
+                IF FOUND THEN
+                    IF block.end_date IS NOT NULL THEN
+                        UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                            WHERE ip_entity = block.ip_entity;
+                    END IF;
+                ELSE
+                    INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
+                        VALUES (data.ipnet, now(), now() + block_interval);
+                END IF;
+            END IF;
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+--
+CREATE TRIGGER pam_ratebased_firewall_check AFTER INSERT ON pam.inet_log
+    FOR EACH ROW EXECUTE FUNCTION firewall.pam_ratebased_firewall_filter();

@@ -10,6 +10,7 @@
 #include "logging.h"
 #include "db_interface.h"
 #include "yaml_helpers.h"
+#include "ipset_helper.h"
 
 #include <signal.h>
 #include <sys/socket.h>
@@ -30,7 +31,7 @@ static bool firewalld_ipset_name_rebuild_isset = false;
 
 //
 
-bool
+static inline bool
 __is_valid_ipset_name(
     const char  *s
 )
@@ -260,16 +261,48 @@ usage(
 
 //
 
+typedef struct {
+    ipset_helper_t  *ipset_helper;
+    const char      *ipset_name_prod;
+    const char      *ipset_name_rebuild;
+} firewall_notify_ctxt_t;
+
 void
 firewall_notify(
     db_blocklist_enum_ref   eblocklist,
     const void              *context
 )
 {
-    const char      *s;
+    firewall_notify_ctxt_t  *CONTEXT = (firewall_notify_ctxt_t*)context;
+    int                     rc;
     
-    while ( (s = db_blocklist_enum_next(eblocklist)) ) {
-        printf("%s\n", s);
+    rc = ipset_helper_destroy(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild);
+    // We don't care if this succeeded or not...
+    
+    rc = ipset_helper_create(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild);
+    if ( rc == 0 ) {
+        // Populate the ipset with the block list:
+        const char      *ip_entity;
+        
+        DEBUG("ipset update:  created ipset '%s'", CONTEXT->ipset_name_rebuild);
+        while ( (ip_entity = db_blocklist_enum_next(eblocklist)) ) {
+            if ( ip_entity && *ip_entity ) {
+                rc = ipset_helper_add(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, ip_entity);
+                if ( rc ) {
+                    WARN("ipset update:  failed to add '%s' to ipset '%s' (rc = %d): %s", ip_entity, CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+                } else {
+                    DEBUG("ipset update:  added '%s' to ipset '%s'", ip_entity, CONTEXT->ipset_name_rebuild);
+                }
+            }
+        }
+        rc = ipset_helper_activate(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, CONTEXT->ipset_name_prod);
+        if ( rc == 0 ) {
+            DEBUG("ipset update:  successful");
+        } else {
+            ERROR("ipset update:  failed to activate updated ipset (rc = %d): %s", rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+        }
+    } else {
+        ERROR("ipset update:  failed to create rebuild ipset '%s' (rc = %d): %s", CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
     }
 }
 
@@ -281,10 +314,11 @@ main(
     char* const*    argv
 )
 {
-    int                 opt_ch, verbose = 0, quiet = 0;
-    const char          *config_filepath = configuration_filepath_default;
-    db_ref              the_db = NULL;
-    const char          *error_msg = NULL;
+    int                     opt_ch, verbose = 0, quiet = 0;
+    const char              *config_filepath = configuration_filepath_default;
+    db_ref                  the_db = NULL;
+    firewall_notify_ctxt_t  firewall_thread_ctxt;
+    const char              *error_msg = NULL;
     
     /* Block all "other" permissions: */
     umask(007);
@@ -349,9 +383,19 @@ main(
         ERROR("Database: unable to connect to database: %s",
             error_msg ? error_msg : "unknown");
     } else {
-        db_blocklist_async_notification_register(the_db, firewall_notify, NULL, &error_msg);
-        sleep(120);
-        db_close(the_db, &error_msg);
+        /* Connect to ipset facilities: */
+        firewall_thread_ctxt.ipset_helper = ipset_helper_init();
+        if ( firewall_thread_ctxt.ipset_helper ) {
+            firewall_thread_ctxt.ipset_name_prod = firewalld_ipset_name_production;
+            firewall_thread_ctxt.ipset_name_rebuild = firewalld_ipset_name_rebuild;
+            db_blocklist_async_notification_register(the_db, firewall_notify, &firewall_thread_ctxt, &error_msg);
+            sleep(120);
+            db_close(the_db, &error_msg);
+            
+            // Ensure we've dumped the rebuilt list:
+            ipset_helper_destroy(firewall_thread_ctxt.ipset_helper, firewall_thread_ctxt.ipset_name_rebuild);
+            ipset_helper_fini(firewall_thread_ctxt.ipset_helper);
+        }
     }
     
     DEBUG("Terminating.");
