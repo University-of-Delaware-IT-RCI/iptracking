@@ -30,7 +30,7 @@ The configuration mapping can include the following keys:
 | --- | ----------- |
 | `driver-name` | `sqlite3` (mandatory for this driver) |
 | `filename` | Path to the SQLite3 database file.  See also `uri` -- the two are mutually exclusive with `uri` as the default. |
-| `url` | URI specifying the SQLite3 database file.  See also `filename` -- the two are mutually exclusive with `uri` as the default. |
+| `uri` | URI specifying the SQLite3 database file.  See also `filename` -- the two are mutually exclusive with `uri` as the default. |
 | `flags` | Contains a sequence of SQLite3 database open flags that should be applied (see below). |
 
 Database open flags are discussed in depth on [this page](https://www.sqlite.org/c3ref/open.html):
