@@ -8,7 +8,7 @@
 #
 cmake_minimum_required(VERSION 3.20)
 project(iptracking-daemon
-        VERSION 0.0.2
+        VERSION 0.1.0
         DESCRIPTION "A multithreaded message-processing queue for PAM SSH events"
         LANGUAGES C)
 
