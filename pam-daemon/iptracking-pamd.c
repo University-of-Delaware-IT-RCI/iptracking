@@ -59,7 +59,7 @@ db_runloop(
     const char          *error_msg = NULL;
     
     while ( is_running && ! db_open(context->db, &error_msg) ) {
-        // Try again in 5 seconds:
+        /* Try again in 5 seconds: */
         ERROR("Database: unable to connect to database, will retry: %s",
             error_msg ? error_msg : "unknown");
         sleep(5);

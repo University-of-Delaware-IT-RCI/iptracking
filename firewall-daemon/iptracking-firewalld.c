@@ -23,6 +23,7 @@ static const char *configuration_filepath_default = CONFIGURATION_FILEPATH_DEFAU
 
 //
 
+static bool is_running = true;
 static uint32_t firewalld_check_interval = FIREWALLD_CHECK_INTERVAL_DEFAULT;
 static const char *firewalld_ipset_name_production = FIREWALLD_IPSET_NAME_PRODUCTION_DEFAULT;
 static bool firewalld_ipset_name_production_isset = false;
@@ -190,7 +191,7 @@ config_validate(
         return false;
     }
     if ( firewalld_ipset_name_production_isset && ! firewalld_ipset_name_rebuild_isset ) {
-        // Append "_update" to the production name:
+        /* Append "_update" to the production name: */
         firewalld_ipset_name_rebuild = NULL;
         asprintf((char**)&firewalld_ipset_name_rebuild, "%s_update", firewalld_ipset_name_production);
     }
@@ -262,10 +263,85 @@ usage(
 //
 
 typedef struct {
+    db_ref          the_db;
     ipset_helper_t  *ipset_helper;
     const char      *ipset_name_prod;
     const char      *ipset_name_rebuild;
 } firewall_notify_ctxt_t;
+
+//
+
+static pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t timer_cond = PTHREAD_COND_INITIALIZER;
+static struct timespec timer_abstime;
+
+void*
+timer_thread_entry(
+    void    *context
+)
+{
+    firewall_notify_ctxt_t  *CONTEXT = (firewall_notify_ctxt_t*)context;
+    const char              *error_msg;
+    
+    INFO("timer thread: entering runloop");
+    while ( is_running ) {
+        int rc;
+        
+        pthread_mutex_lock(&timer_mutex);
+        rc = pthread_cond_timedwait(&timer_cond, &timer_mutex, &timer_abstime);
+        if ( rc == ETIMEDOUT ) {
+            DEBUG("timer thread: period elapsed, check for firewall updates");
+            
+            /* We reached the end of the wait time, check for
+             * firewall updates:
+             */
+            rc = ipset_helper_destroy(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild);
+            /* We don't care if this succeeded or not... */
+            
+            rc = ipset_helper_create(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild);
+            if ( rc == 0 ) {
+                db_blocklist_enum_ref   eblocklist = db_blocklist_enum_open(CONTEXT->the_db, &error_msg);
+                if ( eblocklist ) {
+                    const char          *ip_entity;
+                    
+                    while ( (ip_entity = db_blocklist_enum_next(eblocklist)) ) {
+                        if ( ip_entity && *ip_entity ) {
+                            rc = ipset_helper_add(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, ip_entity);
+                            if ( rc ) {
+                                WARN("timer thread:  failed to add '%s' to ipset '%s' (rc = %d): %s", ip_entity, CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+                            } else {
+                                DEBUG("timer thread:  added '%s' to ipset '%s'", ip_entity, CONTEXT->ipset_name_rebuild);
+                            }
+                        }
+                    }
+                    db_blocklist_enum_close(eblocklist);
+                } else if ( error_msg ) {
+                    ERROR("timer thread:  failed to get block list:  %s", error_msg);
+                }
+                rc = ipset_helper_activate(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, CONTEXT->ipset_name_prod);
+                if ( rc == 0 ) {
+                    DEBUG("timer thread:  successful");
+                } else {
+                    ERROR("timer thread:  failed to activate updated ipset (rc = %d): %s", rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+                }
+                
+                /* Reset the timer: */
+                clock_gettime(CLOCK_REALTIME, &timer_abstime);
+                timer_abstime.tv_sec += firewalld_check_interval;
+                DEBUG("timer thread:  timer thread wakeup time updated");
+            } else {
+                ERROR("timer thread:  failed to create rebuild ipset '%s' (rc = %d): %s", CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+            }
+        } else {
+            DEBUG("timer thread:  resuming existing timeout period");
+        }
+        pthread_mutex_unlock(&timer_mutex);
+    }
+    INFO("timer thread: exiting runloop");
+    return NULL;
+}
+
+//
 
 void
 firewall_notify(
@@ -277,11 +353,11 @@ firewall_notify(
     int                     rc;
     
     rc = ipset_helper_destroy(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild);
-    // We don't care if this succeeded or not...
+    /* We don't care if this succeeded or not... */
     
     rc = ipset_helper_create(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild);
     if ( rc == 0 ) {
-        // Populate the ipset with the block list:
+        /* Populate the ipset with the block list: */
         const char      *ip_entity;
         
         DEBUG("ipset update:  created ipset '%s'", CONTEXT->ipset_name_rebuild);
@@ -302,12 +378,65 @@ firewall_notify(
         rc = ipset_helper_activate(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, CONTEXT->ipset_name_prod);
         if ( rc == 0 ) {
             DEBUG("ipset update:  successful");
+            
+            /* Reset the periodic check period: */
+            rc = pthread_mutex_lock(&timer_mutex);
+            if ( rc == 0 ) {
+                DEBUG("ipset update:  timer thread mutex locked");
+                
+                /* Reset the timer: */
+                clock_gettime(CLOCK_REALTIME, &timer_abstime);
+                timer_abstime.tv_sec += firewalld_check_interval;
+                DEBUG("ipset update:  timer thread wakeup time updated");
+                
+                /* Wake the timer thread so it resets its wake time: */
+                pthread_cond_broadcast(&timer_cond);
+                rc = pthread_mutex_unlock(&timer_mutex);
+                if ( rc ) {
+                    DEBUG("ipset update:  timer thread mutex unlocked");
+                } else {
+                    ERROR("ipset update:  failed to unlock timer thread mutex (rc = %d)", rc);
+                }
+            } else {
+                ERROR("ipset update:  failed to acquire timer thread mutex (rc = %d)", rc);
+            }
         } else {
             ERROR("ipset update:  failed to activate updated ipset (rc = %d): %s", rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
         }
     } else {
         ERROR("ipset update:  failed to create rebuild ipset '%s' (rc = %d): %s", CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
     }
+}
+
+//
+
+static pthread_mutex_t shutdown_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t shutdown_cond = PTHREAD_COND_INITIALIZER;
+
+void*
+shutdown_thread_entry(
+    void    *context
+)
+{
+    pthread_mutex_lock(&shutdown_mutex);
+    INFO("Shutdown: awaiting signal...");
+    pthread_cond_wait(&shutdown_cond, &shutdown_mutex);
+    INFO("Shutdown: ...received signal.");
+    is_running = false;
+    pthread_mutex_unlock(&shutdown_mutex);
+    return NULL;
+}
+
+//
+
+void
+handle_termination(
+    int     signum
+)
+{
+    pthread_mutex_lock(&shutdown_mutex);
+    pthread_cond_broadcast(&shutdown_cond);
+    pthread_mutex_unlock(&shutdown_mutex);
 }
 
 //
@@ -320,9 +449,11 @@ main(
 {
     int                     opt_ch, verbose = 0, quiet = 0;
     const char              *config_filepath = configuration_filepath_default;
+    pthread_t               timer_thread, shutdown_thread;
     db_ref                  the_db = NULL;
     firewall_notify_ctxt_t  firewall_thread_ctxt;
     const char              *error_msg = NULL;
+    struct sigaction        signal_spec;
     
     /* Block all "other" permissions: */
     umask(007);
@@ -387,19 +518,43 @@ main(
         ERROR("Database: unable to connect to database: %s",
             error_msg ? error_msg : "unknown");
     } else {
+        /* Register signal handlers: */
+        signal_spec.sa_handler = handle_termination;
+        sigemptyset(&signal_spec.sa_mask);
+        signal_spec.sa_flags = 0;
+        sigaction(SIGHUP, &signal_spec, NULL);
+        sigaction(SIGINT, &signal_spec, NULL);
+        sigaction(SIGTERM, &signal_spec, NULL);
+        
         /* Connect to ipset facilities: */
         firewall_thread_ctxt.ipset_helper = ipset_helper_init();
         if ( firewall_thread_ctxt.ipset_helper ) {
+            firewall_thread_ctxt.the_db = the_db;
             firewall_thread_ctxt.ipset_name_prod = firewalld_ipset_name_production;
             firewall_thread_ctxt.ipset_name_rebuild = firewalld_ipset_name_rebuild;
             db_blocklist_async_notification_register(the_db, firewall_notify, &firewall_thread_ctxt, &error_msg);
-            sleep(120);
+            
+            /* At this point we're ready to accept async notifications
+             * from the database and process them.  We want to wake-up
+             * on a periodic schedule, too:
+             */
+            pthread_create(&timer_thread, NULL, timer_thread_entry, (void*)&firewall_thread_ctxt);
+            
+            /* Spawn the shutdown thread: */
+            pthread_create(&shutdown_thread, NULL, shutdown_thread_entry, NULL);
+            
+            /* Wait for threads to exit: */
+            pthread_join(timer_thread, NULL);
+            pthread_join(shutdown_thread, NULL);
+            
+            /* Ready to exit: */
             db_close(the_db, &error_msg);
             
-            // Ensure we've dumped the rebuilt list:
+            /* Ensure we've dumped the rebuilt list: */
             ipset_helper_destroy(firewall_thread_ctxt.ipset_helper, firewall_thread_ctxt.ipset_name_rebuild);
             ipset_helper_fini(firewall_thread_ctxt.ipset_helper);
         }
+        db_dealloc(the_db);
     }
     
     DEBUG("Terminating.");
