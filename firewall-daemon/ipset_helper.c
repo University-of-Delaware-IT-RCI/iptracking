@@ -180,6 +180,18 @@ static int __ipset_helper_types_loaded = 0;
     
     //
     
+#if IPSET_VERSION > 700
+    int
+    __ipset_helper_print_outfn(
+        struct ipset_session    *session,
+        void                    *p,
+        const char              *fmt,
+        ...
+    )
+    {
+        return 0;
+    }
+#else
     int
     __ipset_helper_print_outfn(
         const char  *fmt,
@@ -188,7 +200,8 @@ static int __ipset_helper_types_loaded = 0;
     {
         return -1;
     }
-    
+#endif
+
     //
 
     ipset_helper_t*
