@@ -51,7 +51,7 @@ install(TARGETS iptracking-pam-callback
 #
 # Were we asked to install the generated systemd service file?
 #
-if (${SHOULD_INSTALL_SYSTEMD_SERVICE} AND NOT EXISTS "/etc/systemd/system/iptracking-pamd.service")
+if (${SHOULD_INSTALL_SYSTEMD_SERVICES} AND NOT EXISTS "/etc/systemd/system/iptracking-pamd.service")
     # Install the generated systemd service file in /etc/systemd/system:
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/iptracking-pamd.service"
             DESTINATION "/etc/systemd/system")

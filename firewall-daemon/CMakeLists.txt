@@ -1,7 +1,7 @@
 #
 # Generate the systemd service file:
 #
-#configure_file(iptracking-firewalld.service.in iptracking-firewalld.service)
+configure_file(iptracking-firewalld.service.in iptracking-firewalld.service)
 
 #
 # Does the system have ipset dev headers present?
@@ -76,8 +76,8 @@ install(TARGETS iptracking-firewalld
 #
 # Were we asked to install the generated systemd service file?
 #
-#if (${SHOULD_INSTALL_SYSTEMD_SERVICE} AND NOT EXISTS "/etc/systemd/system/iptracking-pamd.service")
-#    # Install the generated systemd service file in /etc/systemd/system:
-#    install(FILES "${PROJECT_BINARY_DIR}/iptracking-pamd.service"
-#            DESTINATION "/etc/systemd/system")
-#endif ()
+if (${SHOULD_INSTALL_SYSTEMD_SERVICES} AND NOT EXISTS "/etc/systemd/system/iptracking-firewalld.service")
+    # Install the generated systemd service file in /etc/systemd/system:
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/iptracking-firewalld.service"
+            DESTINATION "/etc/systemd/system")
+endif ()

@@ -1,0 +1,11 @@
+[Unit]
+Description=PAM SSH ipset update daemon
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/sysconfig/iptracking-firewalld
+ExecStart=@CMAKE_INSTALL_FULL_SBINDIR@/iptracking-firewalld $OPTIONS
+
+[Install]
+WantedBy=multi-user.target

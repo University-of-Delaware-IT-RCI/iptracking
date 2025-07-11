@@ -283,14 +283,14 @@ timer_thread_entry(
     firewall_notify_ctxt_t  *CONTEXT = (firewall_notify_ctxt_t*)context;
     const char              *error_msg;
     
-    INFO("timer thread: entering runloop");
+    INFO("Timer thread: entering runloop");
     while ( is_running ) {
         int rc;
         
         pthread_mutex_lock(&timer_mutex);
         rc = pthread_cond_timedwait(&timer_cond, &timer_mutex, &timer_abstime);
         if ( rc == ETIMEDOUT ) {
-            DEBUG("timer thread: period elapsed, check for firewall updates");
+            DEBUG("Timer thread: period elapsed, check for firewall updates");
             
             /* We reached the end of the wait time, check for
              * firewall updates:
@@ -308,36 +308,36 @@ timer_thread_entry(
                         if ( ip_entity && *ip_entity ) {
                             rc = ipset_helper_add(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, ip_entity);
                             if ( rc ) {
-                                WARN("timer thread:  failed to add '%s' to ipset '%s' (rc = %d): %s", ip_entity, CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+                                WARN("Timer thread:  failed to add '%s' to ipset '%s' (rc = %d): %s", ip_entity, CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
                             } else {
-                                DEBUG("timer thread:  added '%s' to ipset '%s'", ip_entity, CONTEXT->ipset_name_rebuild);
+                                DEBUG("Timer thread:  added '%s' to ipset '%s'", ip_entity, CONTEXT->ipset_name_rebuild);
                             }
                         }
                     }
                     db_blocklist_enum_close(eblocklist);
                 } else if ( error_msg ) {
-                    ERROR("timer thread:  failed to get block list:  %s", error_msg);
+                    ERROR("Timer thread:  failed to get block list:  %s", error_msg);
                 }
                 rc = ipset_helper_activate(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, CONTEXT->ipset_name_prod);
                 if ( rc == 0 ) {
-                    DEBUG("timer thread:  successful");
+                    DEBUG("Timer thread:  successful");
                 } else {
-                    ERROR("timer thread:  failed to activate updated ipset (rc = %d): %s", rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+                    ERROR("Timer thread:  failed to activate updated ipset (rc = %d): %s", rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
                 }
                 
                 /* Reset the timer: */
                 clock_gettime(CLOCK_REALTIME, &timer_abstime);
                 timer_abstime.tv_sec += firewalld_check_interval;
-                DEBUG("timer thread:  timer thread wakeup time updated");
+                DEBUG("Timer thread:  timer thread wakeup time updated");
             } else {
-                ERROR("timer thread:  failed to create rebuild ipset '%s' (rc = %d): %s", CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+                ERROR("Timer thread:  failed to create rebuild ipset '%s' (rc = %d): %s", CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
             }
-        } else {
-            DEBUG("timer thread:  resuming existing timeout period");
+        } else if ( is_running ) {
+            DEBUG("Timer thread:  resuming existing timeout period");
         }
         pthread_mutex_unlock(&timer_mutex);
     }
-    INFO("timer thread: exiting runloop");
+    INFO("Timer thread: exiting runloop");
     return NULL;
 }
 
@@ -360,51 +360,51 @@ firewall_notify(
         /* Populate the ipset with the block list: */
         const char      *ip_entity;
         
-        DEBUG("ipset update:  created ipset '%s'", CONTEXT->ipset_name_rebuild);
+        DEBUG("Ipset update:  created ipset '%s'", CONTEXT->ipset_name_rebuild);
         if ( eblocklist ) {
             while ( (ip_entity = db_blocklist_enum_next(eblocklist)) ) {
                 if ( ip_entity && *ip_entity ) {
                     rc = ipset_helper_add(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, ip_entity);
                     if ( rc ) {
-                        WARN("ipset update:  failed to add '%s' to ipset '%s' (rc = %d): %s", ip_entity, CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+                        WARN("Ipset update:  failed to add '%s' to ipset '%s' (rc = %d): %s", ip_entity, CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
                     } else {
-                        DEBUG("ipset update:  added '%s' to ipset '%s'", ip_entity, CONTEXT->ipset_name_rebuild);
+                        DEBUG("Ipset update:  added '%s' to ipset '%s'", ip_entity, CONTEXT->ipset_name_rebuild);
                     }
                 }
             }
         } else {
-            DEBUG("ipset update:  ipset '%s' will be empty", CONTEXT->ipset_name_prod);
+            DEBUG("Ipset update:  ipset '%s' will be empty", CONTEXT->ipset_name_prod);
         }
         rc = ipset_helper_activate(CONTEXT->ipset_helper, CONTEXT->ipset_name_rebuild, CONTEXT->ipset_name_prod);
         if ( rc == 0 ) {
-            DEBUG("ipset update:  successful");
+            DEBUG("Ipset update:  successful");
             
             /* Reset the periodic check period: */
             rc = pthread_mutex_lock(&timer_mutex);
             if ( rc == 0 ) {
-                DEBUG("ipset update:  timer thread mutex locked");
+                DEBUG("Ipset update:  timer thread mutex locked");
                 
                 /* Reset the timer: */
                 clock_gettime(CLOCK_REALTIME, &timer_abstime);
                 timer_abstime.tv_sec += firewalld_check_interval;
-                DEBUG("ipset update:  timer thread wakeup time updated");
+                DEBUG("Ipset update:  timer thread wakeup time updated");
                 
                 /* Wake the timer thread so it resets its wake time: */
                 pthread_cond_broadcast(&timer_cond);
                 rc = pthread_mutex_unlock(&timer_mutex);
                 if ( rc ) {
-                    DEBUG("ipset update:  timer thread mutex unlocked");
+                    DEBUG("Ipset update:  timer thread mutex unlocked");
                 } else {
-                    ERROR("ipset update:  failed to unlock timer thread mutex (rc = %d)", rc);
+                    ERROR("Ipset update:  failed to unlock timer thread mutex (rc = %d)", rc);
                 }
             } else {
-                ERROR("ipset update:  failed to acquire timer thread mutex (rc = %d)", rc);
+                ERROR("Ipset update:  failed to acquire timer thread mutex (rc = %d)", rc);
             }
         } else {
-            ERROR("ipset update:  failed to activate updated ipset (rc = %d): %s", rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+            ERROR("Ipset update:  failed to activate updated ipset (rc = %d): %s", rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
         }
     } else {
-        ERROR("ipset update:  failed to create rebuild ipset '%s' (rc = %d): %s", CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
+        ERROR("Ipset update:  failed to create rebuild ipset '%s' (rc = %d): %s", CONTEXT->ipset_name_rebuild, rc, ipset_helper_last_error_message(CONTEXT->ipset_helper));
     }
 }
 
@@ -423,6 +423,12 @@ shutdown_thread_entry(
     pthread_cond_wait(&shutdown_cond, &shutdown_mutex);
     INFO("Shutdown: ...received signal.");
     is_running = false;
+    
+    /* Signal the timer thread that we're done: */
+    pthread_mutex_lock(&timer_mutex);
+    pthread_cond_broadcast(&timer_cond);
+    pthread_mutex_unlock(&timer_mutex);
+    
     pthread_mutex_unlock(&shutdown_mutex);
     return NULL;
 }
@@ -538,6 +544,8 @@ main(
              * from the database and process them.  We want to wake-up
              * on a periodic schedule, too:
              */
+            clock_gettime(CLOCK_REALTIME, &timer_abstime);
+            timer_abstime.tv_sec += 1;
             pthread_create(&timer_thread, NULL, timer_thread_entry, (void*)&firewall_thread_ctxt);
             
             /* Spawn the shutdown thread: */

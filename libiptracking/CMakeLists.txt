@@ -19,10 +19,10 @@ option(SHOULD_INSTALL_LIBTRACKING On "Install the libtracking library and header
 option(SHOULD_INSTALL_CONFIG_TEMPLATE Off "Install a template configuration file")
 
 #
-# Enable if the generated systemd service file should be installed during
+# Enable if the generated systemd service files should be installed during
 # `make install`:
 #
-option(SHOULD_INSTALL_SYSTEMD_SERVICE Off "Install a systemd service for the daemon")
+option(SHOULD_INSTALL_SYSTEMD_SERVICES Off "Install systemd services for the daemons")
 
 #
 # These options control the initial size and growth of the pool of logging
