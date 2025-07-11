@@ -6,8 +6,8 @@
  *
  */
 
-#include "iptracking-daemon.h"
-#include "log_queue.h"
+#include "iptracking.h"
+#include "log_data.h"
 
 #include <signal.h>
 #include <sys/socket.h>
@@ -141,11 +141,14 @@ main(
     if ( !(pam_type && *pam_type) ) exit(101);
     data_buffer.event = log_event_parse_str(pam_type);
     
+    /* The sshd_pid is the parent pid of this process: */
+    data_buffer.sshd_pid = getppid();
+    
     /* If the user is empty just use a sentinel value: */
     strncpy(data_buffer.uid, 
                 (pam_user && *pam_user) ? pam_user : "<<EMPTY>>",
                 sizeof(data_buffer.uid));
-                
+    
     if ( !(ssh_connection && *ssh_connection) ) {
         ssh_connection = getenv("PAM_RHOST");
         if ( !(ssh_connection && *ssh_connection) ) exit(102);

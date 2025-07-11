@@ -30,7 +30,7 @@ The configuration mapping can include the following keys:
 | --- | ----------- |
 | `driver-name` | `sqlite3` (mandatory for this driver) |
 | `filename` | Path to the SQLite3 database file.  See also `uri` -- the two are mutually exclusive with `uri` as the default. |
-| `url` | URI specifying the SQLite3 database file.  See also `filename` -- the two are mutually exclusive with `uri` as the default. |
+| `uri` | URI specifying the SQLite3 database file.  See also `filename` -- the two are mutually exclusive with `uri` as the default. |
 | `flags` | Contains a sequence of SQLite3 database open flags that should be applied (see below). |
 
 Database open flags are discussed in depth on [this page](https://www.sqlite.org/c3ref/open.html):
@@ -186,7 +186,7 @@ The package includes CMake build infrastructure.  The following non-standard opt
 | `SOCKET_DEFAULT_BACKLOG` | 5 | The connection backlog for the socket listen function (see 'man 3 listen') |
 | `SOCKET_DEFAULT_POLL_INTERVAL` | 90 | The number of seconds the socket-polling call will block (see 'man 3 poll') |
 | `SHOULD_INSTALL_CONFIG_TEMPLATE` | Off | If on, the `iptracking.yml` file generated during build will be installed during `make install` |
-| `SHOULD_INSTALL_SYSTEMD_SERVICE` | Off | If on, the `iptracking-daemon.service` file generated during build will be installed during `make install` |
+| `SHOULD_INSTALL_SYSTEMD_SERVICES` | Off | If on, the systemd service files generated during build will be installed during `make install` |
 
 Logged events are read from the socket file and added to an in-memory queue to be sent to the database.  The number of available records can vary according to these parameters:
 
@@ -235,7 +235,7 @@ $ cmake -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release \
     -DENABLE_POSTGRESQL_DRIVER=On -DPostgreSQL_ROOT="$POSTGRESQL_PREFIX" \
     -DENABLE_SQLITE3_DRIVER=On -DSQLite3_ROOT="$SQLITE3_PREFIX" \
     -DENABLE_MYSQL_DRIVER=On -DMySQL_CONFIG_EXECUTABLE="$(which mysql_config)" \
-    -DSHOULD_INSTALL_SYSTEMD_SERVICE=On \
+    -DSHOULD_INSTALL_SYSTEMD_SERVICES=On \
     -DSOCKET_FILEPATH_DEFAULT=/var/run/iptracking.s \
     ..
 ```

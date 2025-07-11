@@ -5,8 +5,8 @@ Before=sshd.service
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/sysconfig/iptracking-daemon
-ExecStart=@CMAKE_INSTALL_FULL_SBINDIR@/iptracking-daemon $OPTIONS
+EnvironmentFile=-/etc/sysconfig/iptracking-pamd
+ExecStart=@CMAKE_INSTALL_FULL_SBINDIR@/iptracking-pamd $OPTIONS
 
 [Install]
 WantedBy=multi-user.target

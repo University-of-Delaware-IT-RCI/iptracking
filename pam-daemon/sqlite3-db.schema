@@ -3,6 +3,7 @@ CREATE TABLE inet_log (
     src_ipaddr      TEXT NOT NULL,
     src_port        INTEGER NOT NULL,
     log_event       INETGER NOT NULL,
+    sshd_pid        INTEGER NOT NULL,
     uid             TEXT NOT NULL,
     log_date        TEXT NOT NULL
 );

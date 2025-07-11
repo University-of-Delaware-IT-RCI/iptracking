@@ -1,0 +1,98 @@
+####
+#### Example iptracking-daemon configuration file
+####
+
+##
+## The database mapping contains the driver-name and any keys
+## the specified driver may need/use.  The basic CSV file
+## is our default here:
+##
+database:
+    driver-name: csvfile
+    filename: /var/log/iptracking.csv
+    delimiter: "|"
+##
+## For postgres, the following keys form a nice minimum:
+##
+#    driver-name: postgresql
+#    dbname: iptracking
+#    host: psql.your.domain
+#    port: 5432
+#    user: iptracking_rw
+#    passfile: /usr/local/etc/psql-iptracking_rw.passwd
+##
+## There are a number of other keys accepted (see the README.md).
+## For Postgres there are also some schema-specific options:
+##   pamd:
+##       schema: pam
+##   firewalld:
+##       schema: firewall
+##       notify-channel: firewall_agent
+##
+##
+## For sqlite3, the following is a nice example:
+##
+#     driver-name: sqlite3
+#     filename: /var/log/iptracking.sqlite3db
+#     flags:
+#         - FULLMUTEX
+#         - PRIVATECACHE
+##
+## There are a few other flags and a URI can be used in lieu of
+## a filename (see the README.md).
+##
+
+##
+## The firewalld dictionary contains parameters associated with
+## the iptracking-firewalld daemon:
+##
+firewalld:
+    ##
+    ## The check-interval is the maximum number of seconds to wait
+    ## between ipset updates:
+    ##
+    check-interval: 300
+    
+    ##
+    ## The daemon populates a temporary ipset with new subnets/addresses
+    ## and then renames/swaps it with a production ipset.
+    ##
+    ipset-name:
+        ##
+        ## The production name is what should be referenced by filtering
+        ## rules; if not specified (or empty) the default "iptracking_block"
+        ## is used.
+        ##
+        production: iptracking_block
+        
+        ##
+        ## The rebuild name is the ipset created and used to build an
+        ## updated list of subnets/addresses; if not specified (or
+        ## empty) the production name has "_next" appended to it.
+        ##
+        rebuild: iptracking_block_update
+
+##
+## The pamd dictionary contains parameters associated with
+## the iptracking-pamd daemon:
+##
+pamd:
+    ##
+    ## The socket-file can be omitted if the compiled-in default is okay.
+    ##
+    socket-file: @SOCKET_FILEPATH_DEFAULT@
+    
+    ##
+    ## The log-pool group of keys control the event record count and
+    ## wait delay scheme (see the README.md for more info).
+    ##
+    log-pool:
+        records:
+            delta: 32
+            min: 32
+            max: 0
+        push-wait-seconds:
+            min: 5
+            max: 600
+            delta: 5
+            grow-threshold: 4

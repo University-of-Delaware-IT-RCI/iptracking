@@ -1,0 +1,253 @@
+--
+-- Database tables et al. used to manage stateful firewalling
+-- of IPs
+--
+CREATE SCHEMA firewall;
+--
+CREATE TYPE firewall.disposition_t AS ENUM ('deny', 'allow');
+--
+-- The static_rules_raw table includes blanket allow/deny rules
+-- that influence the list of blocked IPs.  Any records in the
+-- block table should be filtered-out on SELECT if they appear with
+-- an 'allow' disposition; any records with a 'deny' disposition
+-- should be merged into the SELECT query output.
+--
+-- A single table is used so that no repeats are possible.
+--
+CREATE TABLE firewall.static_rules_raw (
+    ip_entity           CIDR PRIMARY KEY NOT NULL,
+    disposition         firewall.disposition_t DEFAULT 'deny',
+    creation_date       TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    modification_date   TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+--
+-- Allow an agent to register for async notification of changes
+-- to the database; the 'refresh' message would cause the agent
+-- to pull a new copy of the block list and update the local
+-- ipset:
+--
+CREATE RULE firewall_static_rules_raw_insert AS ON INSERT TO firewall.static_rules_raw
+    DO ALSO NOTIFY firewall_agent, 'refresh';
+CREATE RULE firewall_static_rules_raw_update AS ON UPDATE TO firewall.static_rules_raw
+    DO ALSO NOTIFY firewall_agent, 'refresh';
+CREATE RULE firewall_static_rules_raw_delete AS ON DELETE TO firewall.static_rules_raw
+    DO ALSO NOTIFY firewall_agent, 'refresh';
+--
+CREATE OR REPLACE FUNCTION firewall.static_rules_parent_count(target_ip CIDR, target_disposition firewall.disposition_t) RETURNS INTEGER AS $$
+    SELECT COUNT(*) AS parent_count FROM firewall.static_rules_raw
+        WHERE target_ip << ip_entity AND disposition = target_disposition;
+$$ LANGUAGE SQL;
+--
+-- Create a view that filters-out any records that are contained within
+-- other records -- e.g. an IP address that's part of a subnet covered
+-- by the same disposition.
+-- 
+CREATE VIEW firewall.static_rules AS
+    SELECT ip_entity, disposition FROM firewall.static_rules_raw
+        WHERE firewall.static_rules_parent_count(ip_entity, disposition) = 0;
+--
+-- Determine whether or not an address/subnet is allowed by a static
+-- rule:
+--
+CREATE OR REPLACE FUNCTION firewall.is_static_allow(target_ip CIDR) RETURNS BOOLEAN AS $$
+DECLARE
+    match_count RECORD;
+BEGIN
+    SELECT COUNT(*) AS c INTO match_count FROM firewall.static_rules
+        WHERE disposition = 'allow' AND target_ip = ip_entity OR target_ip << ip_entity;
+    RETURN FOUND AND match_count.c > 0;
+END;
+$$ LANGUAGE plpgsql;
+--
+-- Determine whether or not an address/subnet is denied by a static
+-- rule:
+--
+CREATE OR REPLACE FUNCTION firewall.is_static_deny(target_ip CIDR) RETURNS BOOLEAN AS $$
+DECLARE
+    match_count RECORD;
+BEGIN
+    SELECT COUNT(*) AS c INTO match_count FROM firewall.static_rules
+        WHERE disposition = 'deny' AND target_ip = ip_entity OR target_ip << ip_entity;
+    RETURN FOUND AND match_count.c > 0;
+END;
+$$ LANGUAGE plpgsql;
+--
+-- The block table holds addresses/subnets that should be blocked,
+-- possibly for a given time frame.
+--
+CREATE TABLE firewall.block_raw (
+    ip_entity           CIDR PRIMARY KEY NOT NULL,
+    start_date          TIMESTAMP WITH TIME ZONE,
+    end_date            TIMESTAMP WITH TIME ZONE,
+    creation_date       TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    modification_date   TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+--
+-- Allow an agent to register for async notification of changes
+-- to the database; the 'refresh' message would cause the agent
+-- to pull a new copy of the block list and update the local
+-- ipset:
+--
+CREATE RULE firewall_block_raw_insert AS ON INSERT TO firewall.block_raw
+    DO ALSO NOTIFY firewall_agent, 'refresh';
+CREATE RULE firewall_block_raw_update AS ON UPDATE TO firewall.block_raw
+    DO ALSO NOTIFY firewall_agent, 'refresh';
+CREATE RULE firewall_block_raw_delete AS ON DELETE TO firewall.block_raw
+    DO ALSO NOTIFY firewall_agent, 'refresh';
+--
+CREATE OR REPLACE FUNCTION firewall.block_parent_count(target_ip CIDR) RETURNS INTEGER AS $$
+    SELECT COUNT(*) AS parent_count FROM firewall.block_raw
+        WHERE target_ip << ip_entity AND
+            (start_date IS NULL OR start_date < now()) AND (end_date IS NULL OR end_date > now())
+$$ LANGUAGE SQL;
+--
+-- Create a view that culls any addresses/subnets that are allowed by
+-- a static rule:
+--
+CREATE OR REPLACE VIEW firewall.block_raw_minus_allow AS
+    SELECT * FROM firewall.block_raw WHERE NOT firewall.is_static_allow(ip_entity);
+--
+-- Create a view that takes the view with allowed addresses/subnets already
+-- culled and adds-in any static denials:
+--
+CREATE OR REPLACE VIEW firewall.block AS
+    SELECT * FROM firewall.block_raw_minus_allow
+        WHERE NOT firewall.is_static_deny(ip_entity) AND firewall.block_parent_count(ip_entity) = 0
+        UNION (SELECT ip_entity, NULL AS start_date, NULL AS end_date, now() AS creation_date, now() AS modification_date FROM firewall.static_rules WHERE disposition = 'deny') ORDER BY ip_entity;
+--
+-- Finally, create a view that shows blocks that are active at this moment.  This
+-- is what an agent looking to update a firewall ipset would be likely to query.
+--
+CREATE OR REPLACE VIEW firewall.block_now AS
+    SELECT ip_entity FROM firewall.block
+        WHERE (start_date IS NULL OR start_date < now()) AND (end_date IS NULL OR end_date > now())
+        ORDER BY ip_entity ASC;
+
+
+--
+-- Function that performs cleanup on the blocks table to scrub
+-- expired tuples:
+--
+CREATE OR REPLACE FUNCTION firewall.cleanup_block_table() RETURNS INTEGER AS $$
+DECLARE
+    nrows   INTEGER;
+BEGIN
+    DELETE FROM firewall.block_raw WHERE end_date <= now();
+    GET DIAGNOSTICS nrows = ROW_COUNT;
+    RETURN nrows;
+END;
+$$ LANGUAGE plpgsql;
+
+
+--
+-- Trigger function that is meant to catch excessive rate-based connection
+-- thresholds.
+--
+-- When we create the trigger, we'll ensure it only reacts to INSERT ops;
+-- we don't need to gate that in the function.  The trigger also needs to be
+-- an AFTER trigger.
+--
+CREATE OR REPLACE FUNCTION firewall.pam_ratebased_firewall_filter() RETURNS TRIGGER AS $$
+DECLARE
+    data            RECORD;
+    block           RECORD;
+    block_interval  INTERVAL;
+BEGIN
+    -- Check by IP address itself:
+    SELECT * INTO data FROM pam.src_ipaddr_counts_per_interval WHERE src_ipaddr = NEW.src_ipaddr;
+    IF FOUND THEN
+        -- Check for thresholds' being exceeded:
+        IF data.last_five >= 20 THEN
+            block_interval := '15 minutes'::INTERVAL;
+        ELSIF data.last_fifteen >= 60 THEN
+            block_interval := '1 hour'::INTERVAL;
+        ELSIF data.last_hour >= 80 THEN
+            block_interval := '1 day'::INTERVAL;
+        ELSIF data.last_day >= 150 THEN
+            block_interval := '1 week'::INTERVAL;
+        ELSE
+            block_interval := NULL;
+        END IF;
+        IF block_interval IS NOT NULL THEN
+            -- Insert a new block into the table, extending the end_date
+            -- if a tuple already exists:
+            SELECT * INTO block FROM firewall.block_raw WHERE ip_entity = NEW.src_ipaddr;
+            IF FOUND THEN
+                IF block.end_date IS NOT NULL THEN
+                    UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                        WHERE ip_entity = block.ip_entity;
+                END IF;
+            ELSE
+                INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
+                    VALUES (NEW.src_ipaddr, now(), now() + block_interval);
+            END IF;
+        END IF;
+    END IF;
+    
+    -- Check by /16 subnet:
+    SELECT * INTO data FROM pam.nets_16_counts_per_interval WHERE NEW.src_ipaddr << ipnet;
+    IF FOUND THEN
+        -- Check for thresholds' being exceeded:
+        IF data.last_five >= 80 THEN
+            block_interval := '1 hour'::INTERVAL;
+        ELSIF data.last_fifteen >= 150 THEN
+            block_interval := '12 hours'::INTERVAL;
+        ELSIF data.last_hour >= 200 THEN
+            block_interval := '1 day'::INTERVAL;
+        ELSIF data.last_day >= 350 THEN
+            block_interval := '1 week'::INTERVAL;
+        ELSE
+            block_interval := NULL;
+        END IF;
+        IF block_interval IS NOT NULL THEN
+            -- Insert a new block into the table, extending the end_date
+            -- if a tuple already exists:
+            SELECT * INTO block FROM firewall.block_raw WHERE data.ipnet << ip_entity;
+            IF FOUND THEN
+                IF block.end_date IS NOT NULL THEN
+                    UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                        WHERE ip_entity = block.ip_entity;
+                END IF;
+            ELSE
+                INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
+                    VALUES (data.ipnet, now(), now() + block_interval);
+            END IF;
+        END IF;
+    ELSE
+        -- Check by /24 subnet:
+        SELECT * INTO data FROM pam.nets_24_counts_per_interval WHERE NEW.src_ipaddr << ipnet;
+        IF FOUND THEN
+            -- Check for thresholds' being exceeded:
+            IF data.last_five >= 40 THEN
+                block_interval := '1 hour'::INTERVAL;
+            ELSIF data.last_fifteen >= 100 THEN
+                block_interval := '12 hours'::INTERVAL;
+            ELSIF data.last_hour >= 120 THEN
+                block_interval := '1 day'::INTERVAL;
+            ELSIF data.last_day >= 200 THEN
+                block_interval := '1 week'::INTERVAL;
+            ELSE
+                block_interval := NULL;
+            END IF;
+            IF block_interval IS NOT NULL THEN
+                -- Insert a new block into the table, extending the end_date
+                -- if a tuple already exists:
+                SELECT * INTO block FROM firewall.block_raw WHERE data.ipnet << ip_entity;
+                IF FOUND THEN
+                    IF block.end_date IS NOT NULL THEN
+                        UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                            WHERE ip_entity = block.ip_entity;
+                    END IF;
+                ELSE
+                    INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
+                        VALUES (data.ipnet, now(), now() + block_interval);
+                END IF;
+            END IF;
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+--
+CREATE TRIGGER pam_ratebased_firewall_check AFTER INSERT ON pam.inet_log
+    FOR EACH ROW EXECUTE FUNCTION firewall.pam_ratebased_firewall_filter();

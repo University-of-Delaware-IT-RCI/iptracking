@@ -337,7 +337,7 @@ SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per
     SELECT COUNT(*) AS event_count, COUNT(CASE WHEN log_event = 'open_session' THEN 1 END) AS session_count, src_ipaddr, COUNT(DISTINCT uid) AS unique_uids, (MAX(log_date) - MIN(log_date)) AS period
         FROM inet_log
         GROUP BY src_ipaddr
-        ORDER BY event_count, session_count DESC
+        ORDER BY event_count DESC, session_count DESC
     ) WHERE event_count > 2500
     LIMIT {cli_args.top_N}"""
                     db_cursor.execute(query=query_str, prepare=False)

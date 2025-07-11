@@ -9,6 +9,8 @@
 #ifndef __LOGGING_H__
 #define __LOGGING_H__
 
+#include "iptracking.h"
+
 /*!
  * @enum logging_level
  *

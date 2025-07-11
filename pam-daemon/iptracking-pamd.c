@@ -1,12 +1,12 @@
 /*
  * iptracking
- * iptracking-daemon.c
+ * iptracking-pamd.c
  *
  * Main program.
  *
  */
 
-#include "iptracking-daemon.h"
+#include "iptracking.h"
 #include "logging.h"
 #include "log_queue.h"
 #include "db_interface.h"
@@ -59,7 +59,7 @@ db_runloop(
     const char          *error_msg = NULL;
     
     while ( is_running && ! db_open(context->db, &error_msg) ) {
-        // Try again in 5 seconds:
+        /* Try again in 5 seconds: */
         ERROR("Database: unable to connect to database, will retry: %s",
             error_msg ? error_msg : "unknown");
         sleep(5);
@@ -70,18 +70,20 @@ db_runloop(
         /* The log_queue_pop() function will block until a record becomes available: */
         if ( log_queue_pop(&context->lq, &data) ) {
             if ( db_log_one_event(context->db, &data, &error_msg) ) {
-                DEBUG("Database: logged data { %s, %s, %s, %s, %hu, %s }",
+                DEBUG("Database: logged data { %s, %s, %s, %ld, %s, %hu, %s }",
                     data.log_date,
                     log_event_to_str(data.event),
                     data.uid,
+                    (long int)data.sshd_pid,
                     data.src_ipaddr,
                     data.src_port,
                     data.dst_ipaddr);
             } else {
-                ERROR("Database: unable to log data { %s, %s, %s, %s, %hu, %s }: %s",
+                ERROR("Database: unable to log data { %s, %s, %s, %ld, %s, %hu, %s }: %s",
                     data.log_date,
                     log_event_to_str(data.event),
                     data.uid,
+                   (long int) data.sshd_pid,
                     data.src_ipaddr,
                     data.src_port,
                     data.dst_ipaddr,
@@ -276,81 +278,89 @@ config_read_yaml_file(
                          * Check for any database config items:
                          */
                         if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "database")) ) {
-                            *event_db = db_alloc(NULL, &config_doc, node);
+                            *event_db = db_alloc(NULL, &config_doc, node, db_options_no_firewall);
                         }
+                        
                         /*
-                         * Check for the socket file path:
+                         * Check for the pamd config sub-dict:
                          */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "socket-file")) ) {
-                            const char  *s = yaml_helper_get_scalar_value(node);
+                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "pamd")) ) {
+                            yaml_node_t     *pam_node;
                             
-                            if ( ! s ) {
-                                ERROR("Configuration: invalid socket-file value");
-                                rc = false;
-                                break;
-                            }
-                            socket_filepath = s;
-                        }
-                        /*
-                         * Check for any log-pool config items:
-                         */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "log-pool.records")) ) {
-                            yaml_node_t     *val_node;
-                            
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "min")) ) {
-                                if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_min) ) {
-                                    ERROR("Configuration: invalid log-pool.records.min value");
+                            /*
+                             * Check for the socket file path:
+                             */
+                            if ( (pam_node = yaml_helper_doc_node_at_path(&config_doc, node, "socket-file")) ) {
+                                const char  *s = yaml_helper_get_scalar_value(pam_node);
+                                
+                                if ( ! s ) {
+                                    ERROR("Configuration: invalid socket-file value");
                                     rc = false;
                                     break;
                                 }
+                                socket_filepath = s;
                             }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "max")) ) {
-                                if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_max) ) {
-                                    ERROR("Configuration: invalid log-pool.records.max value");
-                                    rc = false;
-                                    break;
+                            /*
+                             * Check for any log-pool config items:
+                             */
+                            if ( (pam_node = yaml_helper_doc_node_at_path(&config_doc, node, "log-pool.records")) ) {
+                                yaml_node_t     *val_node;
+                                
+                                if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, pam_node, "min")) ) {
+                                    if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_min) ) {
+                                        ERROR("Configuration: invalid log-pool.records.min value");
+                                        rc = false;
+                                        break;
+                                    }
+                                }
+                                if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, pam_node, "max")) ) {
+                                    if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_max) ) {
+                                        ERROR("Configuration: invalid log-pool.records.max value");
+                                        rc = false;
+                                        break;
+                                    }
+                                }
+                                if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, pam_node, "delta")) ) {
+                                    if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_delta) ) {
+                                        ERROR("Configuration: invalid log-pool.records.delta value");
+                                        rc = false;
+                                        break;
+                                    }
                                 }
                             }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "delta")) ) {
-                                if ( ! yaml_helper_get_scalar_uint32_value(val_node, &log_pool_records_delta) ) {
-                                    ERROR("Configuration: invalid log-pool.records.delta value");
-                                    rc = false;
-                                    break;
+                            /*
+                             * Check for any wait time config items:
+                             */
+                            if ( (pam_node = yaml_helper_doc_node_at_path(&config_doc, node, "log-pool.push-wait-seconds")) ) {
+                                yaml_node_t     *val_node;
+                                
+                                if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, pam_node, "min")) ) {
+                                    if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_min) ) {
+                                        ERROR("Configuration: invalid log-pool.push-wait-seconds.min value");
+                                        rc = false;
+                                        break;
+                                    }
                                 }
-                            }
-                        }
-                        /*
-                         * Check for any wait time config items:
-                         */
-                        if ( (node = yaml_helper_doc_node_at_path(&config_doc, root_node, "log-pool.push-wait-seconds")) ) {
-                            yaml_node_t     *val_node;
-                            
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "min")) ) {
-                                if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_min) ) {
-                                    ERROR("Configuration: invalid log-pool.push-wait-seconds.min value");
-                                    rc = false;
-                                    break;
+                                if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, pam_node, "max")) ) {
+                                    if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_max) ) {
+                                        ERROR("Configuration: invalid log-pool.push-wait-seconds.max value");
+                                        rc = false;
+                                        break;
+                                    }
                                 }
-                            }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "max")) ) {
-                                if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_max) ) {
-                                    ERROR("Configuration: invalid log-pool.push-wait-seconds.max value");
-                                    rc = false;
-                                    break;
+                                if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, pam_node, "delta")) ) {
+                                    if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_dt) ) {
+                                        ERROR("Configuration: invalid log-pool.push-wait-seconds.delta value");
+                                        rc = false;
+                                        break;
+                                    }
                                 }
-                            }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "delta")) ) {
-                                if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_dt) ) {
-                                    ERROR("Configuration: invalid log-pool.push-wait-seconds.delta value");
-                                    rc = false;
-                                    break;
-                                }
-                            }
-                            if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, node, "grow-threshold")) ) {
-                                if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_dt_thresh) ) {
-                                    ERROR("Configuration: invalid log-pool.push-wait-seconds.grow-threshold value");
-                                    rc = false;
-                                    break;
+                                if ( (val_node = yaml_helper_doc_node_at_path(&config_doc, pam_node, "grow-threshold")) ) {
+                                    if ( ! yaml_helper_get_scalar_int_value(val_node, &log_pool_push_wait_seconds_dt_thresh) ) {
+                                        ERROR("Configuration: invalid log-pool.push-wait-seconds.grow-threshold value");
+                                        rc = false;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -564,6 +574,16 @@ main(
             case 'c':
                 config_filepath = optarg;
                 break;
+        }
+    }
+    
+    /* Load configuration: */
+    if ( ! config_read_yaml_file(config_filepath, &tc.db) ) exit(EINVAL);
+    
+    /* Overrides from CLI: */
+    optind = 1;
+    while ( (opt_ch = getopt_long(argc, argv, cli_options_str, cli_options, NULL)) != -1 ) {
+        switch ( opt_ch ) {
             case 'b': {
                 char    *endptr;
                 long    ival = strtol(optarg, &endptr, 0);
@@ -588,9 +608,6 @@ main(
             }
         }
     }
-    
-    /* Load configuration: */
-    if ( ! config_read_yaml_file(config_filepath, &tc.db) ) exit(EINVAL);
     
     /* Validate configuration: */
     if ( ! config_validate(tc.db) ) exit(EINVAL);

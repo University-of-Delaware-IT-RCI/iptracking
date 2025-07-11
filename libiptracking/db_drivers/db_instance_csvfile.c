@@ -39,7 +39,10 @@ static db_driver_callbacks_t    db_driver_csvfile_callbacks = {
         .summarize_to_log = __db_instance_csvfile_summarize_to_log,
         .open = __db_instance_csvfile_open,
         .close = __db_instance_csvfile_close,
-        .log_one_event = __db_instance_csvfile_log_one_event
+        .log_one_event = __db_instance_csvfile_log_one_event,
+        .blocklist_enum_open = NULL,
+        
+        .blocklist_async_notification_toggle = NULL
     };
     
 //
@@ -140,7 +143,9 @@ __db_instance_csvfile_open(
 {
     db_instance_csvfile_t   *THE_DB = (db_instance_csvfile_t*)the_db;
     
-    if ( ! THE_DB->fptr ) {
+    if ( (THE_DB->base.options & db_options_no_pam_logging) == db_options_no_pam_logging ) {
+        DEBUG("Database: no PAM logging enabled, database is non-functional"); 
+    } else if ( ! THE_DB->fptr ) {
         int                 rc;
         
         DEBUG("Database: connecting to file '%s'", THE_DB->filename);
@@ -190,12 +195,19 @@ __db_instance_csvfile_log_one_event(
     if ( THE_DB->fptr ) {
         int         rc;
         
-        rc = fprintf(THE_DB->fptr, "%2$s%1$s%3$s%1$s%4$d%1$s%5$s%1$s%6$s%1$s%7$s\n",
+        rc = fprintf(THE_DB->fptr, "%2$s"
+                                   "%1$s%3$s"
+                                   "%1$s%4$d"
+                                   "%1$s%5$s"
+                                   "%1$s%6$ld"
+                                   "%1$s%7$s"
+                                   "%1$s%8$s\n",
                 THE_DB->delimiter ? THE_DB->delimiter : ",",
                 the_event->dst_ipaddr,
                 the_event->src_ipaddr,
                 the_event->src_port,
                 log_event_to_str(the_event->event),
+                (long int)the_event->sshd_pid,
                 the_event->uid,
                 the_event->log_date);
         if ( rc <= 0 ) {
