@@ -673,8 +673,13 @@ if not info_strs.is_empty():
         from email.message import Message
 
         mm = Message()
-        mm.set_payload(message_body)
-        mm['subject'] = iptracking_email_subject + ', ' + info_strs.official_timestamp()
+        mm.set_payload(message_body.encode('utf8'), charset='utf-8')
+        mm['Subject'] = iptracking_email_subject + ', ' + info_strs.official_timestamp()
+        mm['From'] = iptracking_email_sender
+        mm['To'] = ', '.join(cli_args.emailAddresses)
 
         mta = smtplib.SMTP(iptracking_smtp_server)
-        mta.sendmail(iptracking_email_sender, cli_args.emailAddresses, str(mm))
+        #mta.sendmail(iptracking_email_sender, cli_args.emailAddresses, str(mm))
+        mta.send_message(mm)
+        mta.quit()
+
