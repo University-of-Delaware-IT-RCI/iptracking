@@ -285,7 +285,7 @@ def pre_maintenance(db_cursor, cli_args, dns_helper):
             #
             with db_cursor.connection.transaction(force_rollback=cli_args.is_dry_run):
                 query_str = f"""
-    DELETE FROM inet_log
+    DELETE FROM pam.inet_log
         WHERE log_date < CURRENT_DATE - '{cli_args.purge_day_count} day'::INTERVAL"""
                 db_cursor.execute(query=query_str, prepare=False)
                 info_strs.append(f'Removed logged events older than {cli_args.purge_day_count} day(s): {db_cursor.rowcount} tuples.')
@@ -308,8 +308,8 @@ def daily_event_count(db_cursor, cli_args, dns_helper):
             with db_cursor.connection.transaction(force_rollback=True):
                 query_str = f"""
     SELECT DATE_TRUNC('day', I.log_date)::DATE AS log_day, D.abbrev AS day_of_week, COUNT(*) AS event_count
-        FROM inet_log AS I
-        INNER JOIN dow_to_text AS D ON (EXTRACT(DOW FROM I.log_date) = D.dow_value)
+        FROM pam.inet_log AS I
+        INNER JOIN pam.dow_to_text AS D ON (EXTRACT(DOW FROM I.log_date) = D.dow_value)
         GROUP BY log_day, day_of_week
         ORDER BY log_day ASC"""
                 db_cursor.execute(query=query_str, prepare=False)
@@ -335,7 +335,7 @@ def top_counts(db_cursor, cli_args, dns_helper):
                     query_str = f"""
 SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per_day FROM (
     SELECT COUNT(*) AS event_count, COUNT(CASE WHEN log_event = 'open_session' THEN 1 END) AS session_count, src_ipaddr, COUNT(DISTINCT uid) AS unique_uids, (MAX(log_date) - MIN(log_date)) AS period
-        FROM inet_log
+        FROM pam.inet_log
         GROUP BY src_ipaddr
         ORDER BY event_count DESC, session_count DESC
     ) WHERE event_count > 2500
@@ -368,7 +368,7 @@ SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per
                     query_str = f"""
 SELECT *, (3600*event_count/EXTRACT(EPOCH FROM period))::NUMERIC(8,2) AS avg_per_day FROM (
     SELECT uid, COUNT(*) AS event_count, (MAX(log_date) - MIN(log_date)) AS period
-        FROM inet_log
+        FROM pam.inet_log
         GROUP BY uid
         ORDER BY event_count DESC
     ) WHERE event_count > 2500
@@ -388,7 +388,7 @@ SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, *
     SELECT COUNT(CASE WHEN log_event='open_session' THEN 1 END) AS session_count,
             COUNT(CASE WHEN log_event='auth' THEN 1 END) AS auth_count,
             src_ipaddr, COUNT(DISTINCT uid) AS unique_uids, (MAX(log_date) - MIN(log_date)) AS period
-        FROM inet_log
+        FROM pam.inet_log
         GROUP BY src_ipaddr
     ) WHERE auth_count > 0 AND session_count > 0 )
         WHERE success_ratio < {cli_args.success_ratio_threshold}
@@ -404,7 +404,7 @@ SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, *
                         
                         # For each hit, show the uids that were granted sessions:
                         for r in results:
-                            db_cursor.execute(query="SELECT DISTINCT uid FROM inet_log WHERE src_ipaddr = %s AND log_event = 'open_session'",
+                            db_cursor.execute(query="SELECT DISTINCT uid FROM pam.inet_log WHERE src_ipaddr = %s AND log_event = 'open_session'",
                                     params=[r[3]])
                             info_strs.append(f'    - src_ipaddr "{r[3]}", sessions granted on uids:\n'  + 
                                               '        - ' + \
@@ -422,7 +422,7 @@ SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, *
     SELECT COUNT(CASE WHEN log_event='open_session' THEN 1 END) AS session_count,
             COUNT(CASE WHEN log_event='auth' THEN 1 END) AS auth_count,
             uid, COUNT(DISTINCT src_ipaddr) AS unique_ips, (MAX(log_date) - MIN(log_date)) AS period
-        FROM inet_log
+        FROM pam.inet_log
         GROUP BY uid
     ) WHERE auth_count > 0 AND session_count > 0 )
         WHERE success_ratio < {cli_args.success_ratio_threshold}
@@ -438,7 +438,7 @@ SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, *
                         
                         # For each hit, show the IPs that were granted sessions:
                         for r in results:
-                            db_cursor.execute(query="SELECT DISTINCT src_ipaddr FROM inet_log WHERE uid = %s AND log_event = 'open_session'",
+                            db_cursor.execute(query="SELECT DISTINCT src_ipaddr FROM pam.inet_log WHERE uid = %s AND log_event = 'open_session'",
                                     params=[r[3]])
                             info_strs.append(f'    - uid "{r[3]}", sessions granted on IPs:\n'  + 
                                               '        - ' + \
@@ -452,18 +452,12 @@ SELECT * FROM (SELECT (session_count::REAL/auth_count::REAL) AS success_ratio, *
                 try:
                     info_strs.append('## Top (possibly) open sessions from foreign IPs')
                     query_str = f"""
-SELECT uid, src_ipaddr,
-       (open_count - close_count) AS live_sessions ,
-       (auth_count + open_count + close_count) AS total_events FROM (
-    SELECT COUNT(CASE WHEN log_event='auth' THEN 1 END) AS auth_count,
-           COUNT(CASE WHEN log_event='open_session' THEN 1 END) AS open_count, 
-           COUNT(CASE WHEN log_event='close_session' THEN 1 END) AS close_count, 
-           src_ipaddr, uid FROM inet_log
-        WHERE NOT (src_ipaddr << '128.175.0.0/16'::CIDR OR src_ipaddr << '128.4.0.0/16'::CIDR OR
-                   src_ipaddr << '10.0.0.0/8'::CIDR)
-        GROUP BY src_ipaddr, uid
-    ) WHERE (open_count - close_count) > 0
-    ORDER BY live_sessions DESC, total_events DESC
+SELECT uid, src_ipaddr, count(*) as live_sessions, method
+    FROM pam.open_sessions
+    WHERE NOT (src_ipaddr << '128.175.0.0/16'::CIDR OR src_ipaddr << '128.4.0.0/16'::CIDR OR
+               src_ipaddr << '10.0.0.0/8'::CIDR)
+    GROUP BY uid, src_ipaddr, method
+    ORDER BY live_sessions DESC
     LIMIT {cli_args.top_N}"""
                     db_cursor.execute(query=query_str, prepare=False)
                     if db_cursor.rowcount <= 0:
@@ -481,7 +475,7 @@ SELECT uid, src_ipaddr,
                                 results.append([*result, ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
                             else:
                                 results.append([*result, '', '', ''])
-                        info_strs.append(results_to_text_table(results, headers, alignment={'uid':'l', 'src_ipaddr': 'l', 'live_sessions': 'r', 'total_events': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
+                        info_strs.append(results_to_text_table(results, headers, alignment={'uid':'l', 'src_ipaddr': 'l', 'live_sessions': 'r', 'method': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
                 except Exception as E:
                     info_strs.append(f'ERROR:  Failed to produce top (possibly) open sessions from foreign IPs: {E}')
                 
@@ -496,7 +490,7 @@ SELECT unique_ip_count, array_length(foreign_ips, 1) AS foreign_ip_count, uid, f
     SELECT COUNT(DISTINCT src_ipaddr) AS unique_ip_count,
            uid,
            array_agg(DISTINCT src_ipaddr) FILTER (WHERE NOT (src_ipaddr << '128.175.0.0/16'::CIDR OR src_ipaddr << '128.4.0.0/16'::CIDR OR src_ipaddr << '10.0.0.0/8'::CIDR)) AS foreign_ips
-        FROM inet_log
+        FROM pam.inet_log
         WHERE uid IN (SELECT uid FROM hpc_uids) AND log_event='open_session'
         GROUP BY uid
     )
@@ -679,7 +673,6 @@ if not info_strs.is_empty():
         mm['To'] = ', '.join(cli_args.emailAddresses)
 
         mta = smtplib.SMTP(iptracking_smtp_server)
-        #mta.sendmail(iptracking_email_sender, cli_args.emailAddresses, str(mm))
         mta.send_message(mm)
         mta.quit()
 

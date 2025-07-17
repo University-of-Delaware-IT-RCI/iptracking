@@ -185,6 +185,7 @@ CREATE OR REPLACE VIEW pam.open_sessions AS SELECT dst_ipaddr, src_ipaddr, src_p
            sshd_pid, uid,
            MIN(log_date) AS start_date
         FROM pam.inet_log
+        WHERE sshd_pid != 0
         GROUP BY dst_ipaddr,src_ipaddr,src_port,sshd_pid,uid)
     WHERE (events <@ '{auth,open_session}' AND events @> '{auth,open_session}')
        OR (events = '{open_session}')
@@ -206,6 +207,7 @@ CREATE OR REPLACE VIEW pam.completed_sessions AS SELECT dst_ipaddr, src_ipaddr, 
            MIN(log_date) AS start_date,
            (MAX(log_date) - MIN(log_date)) AS duration
         FROM pam.inet_log
+        WHERE sshd_pid != 0
         GROUP BY dst_ipaddr,src_ipaddr,src_port,sshd_pid,uid)
     WHERE (events <@ '{auth,open_session,close_session}' AND events @> '{auth,open_session,close_session}')
        OR (events <@ '{open_session,close_session}' AND events @> '{open_session,close_session}')
