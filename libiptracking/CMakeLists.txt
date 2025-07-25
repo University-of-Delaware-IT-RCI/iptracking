@@ -7,22 +7,32 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 set(CONFIGURATION_FILEPATH_DEFAULT "${CMAKE_INSTALL_FULL_SYSCONFDIR}/iptracking.yml" CACHE PATH "Default configuration file path")
 
 #
+# Use dependency RPATHs by default at install:
+#
+option(SHOULD_USE_INSTALL_RPATH "Add rpath directories at install" On)
+
+#
+# Do not use dependency RPATHS by default at build:
+#
+option(SHOULD_USE_BUILD_RPATH "Add rpath directories at build" Off)
+
+#
 # By default we don't install the library, since it's primarily only of
 # use internally to this project.  But we're willing if the user wants to...
 #
-option(SHOULD_INSTALL_LIBTRACKING On "Install the libtracking library and headers")
+option(SHOULD_INSTALL_LIBTRACKING "Install the libtracking library and headers" On)
 
 #
 # Enable if the generated daemon configuration file should be installed
 # during `make install`:
 #
-option(SHOULD_INSTALL_CONFIG_TEMPLATE Off "Install a template configuration file")
+option(SHOULD_INSTALL_CONFIG_TEMPLATE "Install a template configuration file" Off)
 
 #
 # Enable if the generated systemd service files should be installed during
 # `make install`:
 #
-option(SHOULD_INSTALL_SYSTEMD_SERVICES Off "Install systemd services for the daemons")
+option(SHOULD_INSTALL_SYSTEMD_SERVICES "Install systemd services for the daemons" Off)
 
 #
 # These options control the initial size and growth of the pool of logging
@@ -85,7 +95,7 @@ endif ()
 #
 # Find a PostgreSQL package at least 15.x or newer:
 #
-option(ENABLE_POSTGRESQL_DRIVER Off "Include the PostgreSQL database driver")
+option(ENABLE_POSTGRESQL_DRIVER "Include the PostgreSQL database driver" Off)
 if (ENABLE_POSTGRESQL_DRIVER)
     set(HAVE_POSTGRESQL On)
     find_package(PostgreSQL REQUIRED)
@@ -97,7 +107,7 @@ endif ()
 #
 # Find an SQLite3 package:
 #
-option(ENABLE_SQLITE3_DRIVER Off "Include the SQLite3 database driver")
+option(ENABLE_SQLITE3_DRIVER "Include the SQLite3 database driver" Off)
 if (ENABLE_SQLITE3_DRIVER)
     set(HAVE_SQLITE3 On)
     find_package(SQLite3 REQUIRED)
@@ -106,7 +116,7 @@ endif ()
 #
 # Find a Mysql client package:
 #
-option(ENABLE_MYSQL_DRIVER Off "Include the Mysql database driver")
+option(ENABLE_MYSQL_DRIVER "Include the Mysql database driver" Off)
 if (ENABLE_MYSQL_DRIVER)
     set(HAVE_MYSQL On)
     include(FindMySQL)
@@ -184,14 +194,47 @@ target_link_libraries(libiptracking
     PUBLIC
         Threads::Threads
         "${LIBYAML_LIBRARY}")
+set(TARGET_RPATH_LIST "")
 if (HAVE_POSTGRESQL)
     target_link_libraries(libiptracking PUBLIC PostgreSQL::PostgreSQL)
+    get_target_property(LIB_PATH PostgreSQL::PostgreSQL IMPORTED_LOCATION)
+    if (LIB_PATH)
+        list(APPEND TARGET_RPATH_LIST ${LIB_PATH})
+    endif ()
 endif ()
 if (HAVE_SQLITE3)
     target_link_libraries(libiptracking PUBLIC SQLite::SQLite3)
+    get_target_property(LIB_PATH SQLite::SQLite3 IMPORTED_LOCATION)
+    if (LIB_PATH)
+        list(APPEND TARGET_RPATH_LIST ${LIB_PATH})
+    endif ()
 endif ()
 if (HAVE_MYSQL)
     target_link_libraries(libiptracking PUBLIC MySQL::MySQL)
+    get_target_property(LIB_PATH MySQL::MySQL IMPORTED_LOCATION)
+    if (LIB_PATH)
+        list(APPEND TARGET_RPATH_LIST ${LIB_PATH})
+    endif ()
+endif ()
+if (${SHOULD_USE_INSTALL_RPATH})
+    if (TARGET_RPATH_LIST)
+        message(STATUS "Dependencies' install rpath:  ${TARGET_RPATH_LIST}")
+        set_target_properties(libiptracking
+                PROPERTIES INSTALL_RPATH "${TARGET_RPATH_LIST}")
+    endif ()
+    set(CMAKE_SKIP_INSTALL_RPATH Off CACHE BOOL "Do not emit install rpaths" FORCE)
+else ()
+    set(CMAKE_SKIP_INSTALL_RPATH On CACHE BOOL "Do not emit install rpaths" FORCE)
+endif ()
+if (${SHOULD_USE_BUILD_RPATH})
+    if (TARGET_RPATH_LIST)
+        message(STATUS "Dependencies' build rpath:  ${TARGET_RPATH_LIST}")
+        set_target_properties(libiptracking
+                PROPERTIES BUILD_RPATH "${TARGET_RPATH_LIST}")
+    endif ()
+    set(CMAKE_SKIP_RPATH Off CACHE BOOL "Do not emit build rpaths" FORCE)
+else ()
+    set(CMAKE_SKIP_RPATH On CACHE BOOL "Do not emit build rpaths" FORCE)
 endif ()
 # Install the executable in the sbin/ directory with owner and
 # group privileges only:

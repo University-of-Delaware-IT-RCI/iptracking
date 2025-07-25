@@ -29,7 +29,7 @@ if (HAVE_IPSET_SESSION_H)
                 #
                 # Allow the user to choose to use the higher-level ipset API:
                 #
-                option(USE_IPSET_IPSET_API "For ipset 7.x or newer, use the ipset and not session API" OFF)
+                option(USE_IPSET_IPSET_API "For ipset 7.x or newer, use the ipset and not session API" Off)
             else ()
                 message(STATUS "libipset ipset API is not available.")
                 #
@@ -65,6 +65,16 @@ target_link_libraries(iptracking-firewalld
     PRIVATE
         -lipset
         libiptracking)
+get_target_property(LIB_RPATH libiptracking BUILD_RPATH)
+if (LIB_RPATH)
+    set_target_properties(iptracking-firewalld
+            PROPERTIES BUILD_RPATH "${LIB_RPATH}")
+endif ()
+get_target_property(LIB_RPATH libiptracking INSTALL_RPATH)
+if (LIB_RPATH)
+    set_target_properties(iptracking-firewalld
+            PROPERTIES INSTALL_RPATH "${LIB_RPATH}")
+endif ()
 # Install the executable in the sbin/ directory with owner and
 # group privileges only:
 install(TARGETS iptracking-firewalld

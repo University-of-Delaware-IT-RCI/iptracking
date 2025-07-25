@@ -17,6 +17,16 @@ add_executable(iptracking-pamd
 target_link_libraries(iptracking-pamd
     PRIVATE
         libiptracking)
+get_target_property(LIB_RPATH libiptracking BUILD_RPATH)
+if (LIB_RPATH)
+    set_target_properties(iptracking-pamd
+            PROPERTIES BUILD_RPATH "${LIB_RPATH}")
+endif ()
+get_target_property(LIB_RPATH libiptracking INSTALL_RPATH)
+if (LIB_RPATH)
+    set_target_properties(iptracking-pamd
+            PROPERTIES INSTALL_RPATH "${LIB_RPATH}")
+endif ()
 # Install the executable in the sbin/ directory with owner and
 # group privileges only:
 install(TARGETS iptracking-pamd

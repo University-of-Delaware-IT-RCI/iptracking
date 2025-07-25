@@ -234,7 +234,7 @@ __db_instance_postgresql_alloc(
         }
         
         /* Fill-in the firewall_notify_channel if present: */
-        if ( firewall_schema ) {
+        if ( firewall_notify_channel ) {
             char    *e = stpncpy(p, firewall_notify_channel, extra_bytes);
             
             new_instance->firewall_notify_channel = (const char*)p;
@@ -540,20 +540,20 @@ __db_instance_postgresql_blocklist_async_notification_thread(
         pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &rc);
         pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, &rc);
         
-        // Start listening for notifications:
-        INFO("Database:  notification listener thread:  exec LISTEN query");
-        
         // Prep the query:
         if ( THE_DB->firewall_notify_channel ) {
             db_notify_stmt_query_len = asprintf(&db_notify_stmt_query, "UNLISTEN %s", THE_DB->firewall_notify_channel);
             if ( db_notify_stmt_query_len && db_notify_stmt_query ) {
+                INFO("Database:  notification listener thread:  exec %s query", db_notify_stmt_query + 2);
                 // Use the query string minus the leading "UN":
                 qres = PQexec(THE_DB->db_conn, db_notify_stmt_query + 2);
             } else {
                 // Fall back to generic notification listening:
+                INFO("Database:  notification listener thread:  exec LISTEN query");
                 qres = PQexec(THE_DB->db_conn, "LISTEN");
             }
         } else {
+            INFO("Database:  notification listener thread:  exec LISTEN query");
             qres = PQexec(THE_DB->db_conn, "LISTEN");
         }
         if ( qres ) {

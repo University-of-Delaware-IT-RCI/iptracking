@@ -393,9 +393,9 @@ firewall_notify(
                 pthread_cond_broadcast(&timer_cond);
                 rc = pthread_mutex_unlock(&timer_mutex);
                 if ( rc ) {
-                    DEBUG("Ipset update:  timer thread mutex unlocked");
-                } else {
                     ERROR("Ipset update:  failed to unlock timer thread mutex (rc = %d)", rc);
+                } else {
+                    DEBUG("Ipset update:  timer thread mutex unlocked");
                 }
             } else {
                 ERROR("Ipset update:  failed to acquire timer thread mutex (rc = %d)", rc);

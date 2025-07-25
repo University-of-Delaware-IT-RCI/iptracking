@@ -35,7 +35,7 @@ CREATE RULE firewall_static_rules_raw_delete AS ON DELETE TO firewall.static_rul
 --
 CREATE OR REPLACE FUNCTION firewall.static_rules_parent_count(target_ip CIDR, target_disposition firewall.disposition_t) RETURNS INTEGER AS $$
     SELECT COUNT(*) AS parent_count FROM firewall.static_rules_raw
-        WHERE target_ip << ip_entity AND disposition = target_disposition;
+        WHERE target_ip <<= ip_entity AND disposition = target_disposition;
 $$ LANGUAGE SQL;
 --
 -- Create a view that filters-out any records that are contained within
@@ -54,7 +54,7 @@ DECLARE
     match_count RECORD;
 BEGIN
     SELECT COUNT(*) AS c INTO match_count FROM firewall.static_rules
-        WHERE disposition = 'allow' AND target_ip = ip_entity OR target_ip << ip_entity;
+        WHERE disposition = 'allow' AND target_ip <<= ip_entity;
     RETURN FOUND AND match_count.c > 0;
 END;
 $$ LANGUAGE plpgsql;
@@ -67,7 +67,7 @@ DECLARE
     match_count RECORD;
 BEGIN
     SELECT COUNT(*) AS c INTO match_count FROM firewall.static_rules
-        WHERE disposition = 'deny' AND target_ip = ip_entity OR target_ip << ip_entity;
+        WHERE disposition = 'deny' AND target_ip <<= ip_entity;
     RETURN FOUND AND match_count.c > 0;
 END;
 $$ LANGUAGE plpgsql;
@@ -88,12 +88,12 @@ CREATE TABLE firewall.block_raw (
 -- to pull a new copy of the block list and update the local
 -- ipset:
 --
-CREATE RULE firewall_block_raw_insert AS ON INSERT TO firewall.block_raw
-    DO ALSO NOTIFY firewall_agent, 'refresh';
-CREATE RULE firewall_block_raw_update AS ON UPDATE TO firewall.block_raw
-    DO ALSO NOTIFY firewall_agent, 'refresh';
-CREATE RULE firewall_block_raw_delete AS ON DELETE TO firewall.block_raw
-    DO ALSO NOTIFY firewall_agent, 'refresh';
+-- CREATE RULE firewall_block_raw_insert AS ON INSERT TO firewall.block_raw
+--     DO ALSO NOTIFY firewall_agent, 'refresh';
+-- CREATE RULE firewall_block_raw_update AS ON UPDATE TO firewall.block_raw
+--     DO ALSO NOTIFY firewall_agent, 'refresh';
+-- CREATE RULE firewall_block_raw_delete AS ON DELETE TO firewall.block_raw
+--     DO ALSO NOTIFY firewall_agent, 'refresh';
 --
 CREATE OR REPLACE FUNCTION firewall.block_parent_count(target_ip CIDR) RETURNS INTEGER AS $$
     SELECT COUNT(*) AS parent_count FROM firewall.block_raw
@@ -132,7 +132,7 @@ CREATE OR REPLACE FUNCTION firewall.cleanup_block_table() RETURNS INTEGER AS $$
 DECLARE
     nrows   INTEGER;
 BEGIN
-    DELETE FROM firewall.block_raw WHERE end_date <= now();
+    DELETE FROM firewall.block_raw WHERE end_date IS NOT NULL AND end_date <= now();
     GET DIAGNOSTICS nrows = ROW_COUNT;
     RETURN nrows;
 END;
@@ -147,11 +147,24 @@ $$ LANGUAGE plpgsql;
 -- we don't need to gate that in the function.  The trigger also needs to be
 -- an AFTER trigger.
 --
+CREATE OR REPLACE FUNCTION firewall.md5_agg_fn(TEXT, ANYELEMENT) RETURNS TEXT LANGUAGE SQL AS $$
+    SELECT MD5($1 || $2::TEXT)
+$$;
+CREATE OR REPLACE AGGREGATE firewall.md5_agg(ANYELEMENT)
+(
+  STYPE = TEXT,
+  SFUNC = firewall.md5_agg_fn,
+  INITCOND = ''
+);
+--
+CREATE TABLE firewall.block_now_checksum ( md5_checksum TEXT );
+--
 CREATE OR REPLACE FUNCTION firewall.pam_ratebased_firewall_filter() RETURNS TRIGGER AS $$
 DECLARE
     data            RECORD;
     block           RECORD;
     block_interval  INTERVAL;
+    should_checksum BOOLEAN := False;
 BEGIN
     -- Check by IP address itself:
     SELECT * INTO data FROM pam.src_ipaddr_counts_per_interval WHERE src_ipaddr = NEW.src_ipaddr;
@@ -173,19 +186,21 @@ BEGIN
             -- if a tuple already exists:
             SELECT * INTO block FROM firewall.block_raw WHERE ip_entity = NEW.src_ipaddr;
             IF FOUND THEN
-                IF block.end_date IS NOT NULL THEN
-                    UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                IF block.end_date IS NOT NULL AND block.end_date <= now() THEN
+                    UPDATE firewall.block_raw SET end_date=now() + block_interval, modification_date = now()
                         WHERE ip_entity = block.ip_entity;
+                    should_checksum := True;
                 END IF;
             ELSE
                 INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
                     VALUES (NEW.src_ipaddr, now(), now() + block_interval);
+                should_checksum := True;
             END IF;
         END IF;
     END IF;
     
     -- Check by /16 subnet:
-    SELECT * INTO data FROM pam.nets_16_counts_per_interval WHERE NEW.src_ipaddr << ipnet;
+    SELECT * INTO data FROM pam.nets_16_counts_per_interval WHERE NEW.src_ipaddr <<= ipnet;
     IF FOUND THEN
         -- Check for thresholds' being exceeded:
         IF data.last_five >= 80 THEN
@@ -202,20 +217,22 @@ BEGIN
         IF block_interval IS NOT NULL THEN
             -- Insert a new block into the table, extending the end_date
             -- if a tuple already exists:
-            SELECT * INTO block FROM firewall.block_raw WHERE data.ipnet << ip_entity;
+            SELECT * INTO block FROM firewall.block_raw WHERE data.ipnet <<= ip_entity;
             IF FOUND THEN
-                IF block.end_date IS NOT NULL THEN
-                    UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                IF block.end_date IS NOT NULL AND block.end_date <= now() THEN
+                    UPDATE firewall.block_raw SET end_date=now() + block_interval, modification_date = now()
                         WHERE ip_entity = block.ip_entity;
+                    should_checksum := True;
                 END IF;
             ELSE
                 INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
                     VALUES (data.ipnet, now(), now() + block_interval);
+                should_checksum := True;
             END IF;
         END IF;
     ELSE
         -- Check by /24 subnet:
-        SELECT * INTO data FROM pam.nets_24_counts_per_interval WHERE NEW.src_ipaddr << ipnet;
+        SELECT * INTO data FROM pam.nets_24_counts_per_interval WHERE NEW.src_ipaddr <<= ipnet;
         IF FOUND THEN
             -- Check for thresholds' being exceeded:
             IF data.last_five >= 40 THEN
@@ -232,17 +249,31 @@ BEGIN
             IF block_interval IS NOT NULL THEN
                 -- Insert a new block into the table, extending the end_date
                 -- if a tuple already exists:
-                SELECT * INTO block FROM firewall.block_raw WHERE data.ipnet << ip_entity;
+                SELECT * INTO block FROM firewall.block_raw WHERE data.ipnet <<= ip_entity;
                 IF FOUND THEN
-                    IF block.end_date IS NOT NULL THEN
-                        UPDATE firewall.block_raw SET start_date=now(), end_date=now() + block_interval
+                    IF block.end_date IS NOT NULL AND block.end_date <= now() THEN
+                        UPDATE firewall.block_raw SET end_date=now() + block_interval, modification_date = now()
                             WHERE ip_entity = block.ip_entity;
+                        should_checksum := True;
                     END IF;
                 ELSE
                     INSERT INTO firewall.block_raw (ip_entity, start_date, end_date)
                         VALUES (data.ipnet, now(), now() + block_interval);
+                    should_checksum := True;
                 END IF;
             END IF;
+        END IF;
+    END IF;
+    IF should_checksum THEN
+        SELECT firewall.md5_agg(ip_entity) AS md5_checksum INTO data FROM firewall.block_now;
+        SELECT md5_checksum INTO block FROM firewall.block_now_checksum;
+        IF NOT FOUND OR (block.md5_checksum != data.md5_checksum) THEN
+            IF FOUND THEN
+                UPDATE firewall.block_now_checksum SET md5_checksum = data.md5_checksum;
+            ELSE
+                INSERT INTO firewall.block_now_checksum (md5_checksum) VALUES (data.md5_checksum);
+            END IF;
+            NOTIFY firewall_agent, 'refresh';
         END IF;
     END IF;
     RETURN NULL;
@@ -251,3 +282,4 @@ $$ LANGUAGE plpgsql;
 --
 CREATE TRIGGER pam_ratebased_firewall_check AFTER INSERT ON pam.inet_log
     FOR EACH ROW EXECUTE FUNCTION firewall.pam_ratebased_firewall_filter();
+
