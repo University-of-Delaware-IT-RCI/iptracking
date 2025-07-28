@@ -529,6 +529,34 @@ SELECT unique_ip_count, array_length(foreign_ips, 1) AS foreign_ip_count, uid, f
                             info_strs.append(results_to_text_table(results, headers, alignment={'unique_ip_count':'r', 'foreign_ip_count': 'r', 'uid':'l', 'asn_cidr':'l', 'asn_country_code':'c', 'asn_description':'l', 'foreign_ips':'l'}))
                     except Exception as E:
                         info_strs.append(f'ERROR:  Failed to produce top unique IP counts for open_session, actual HPC users: {E}')
+                
+                #
+                # Firewall blocks:
+                #
+                try:
+                    info_strs.append('## Active firewall blocks')
+                    query_str = f"""SELECT ip_entity FROM firewall.block_now ORDER BY ip_entity"""
+                    db_cursor.execute(query=query_str, prepare=False)
+                    if db_cursor.rowcount <= 0:
+                        info_strs.append('No data.')
+                    else:
+                        # We're going to process each tuple to add duplicate rows for the actual IPs:
+                        results = []
+                        headers = ('ip_entity', 'org cidr', 'org country', 'org descrip')
+                        #
+                        # Try to substitute org CIDR and country code for each IP:
+                        #
+                        for result in db_cursor:
+                            ip_info = dns_helper.ip_to_name(result[0].network_address.packed)
+                            if ip_info:
+                                results.append([result[0], ip_info['asn_cidr'], ip_info['asn_country_code'], ip_info['asn_description']])
+                            else:
+                                results.append([result[0], '', '', ''])
+                        info_strs.append(results_to_text_table(results, headers, alignment={'ip_entity': 'r', 'org cidr': 'r', 'org country': 'c', 'org descrip': 'l' }))
+                    
+                except Exception as E:
+                    info_strs.append(f'ERROR:  Failed to produce top uids by event count: {E}')
+                    
         except Exception as E:
             info_strs.append(f'ERROR:  Failed to open transaction block in top_counts: {E}')
 
