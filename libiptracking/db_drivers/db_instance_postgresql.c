@@ -79,11 +79,30 @@ typedef struct {
     const char*         firewall_schema;
     const char*         firewall_notify_channel;
     //
+    pthread_t           main_thread;
     PGconn              *db_conn;
+    pthread_t           async_thread;
+    PGconn              *db_conn_async;
     //
     bool                is_notify_running;
     pthread_t           notify_thread;
 } db_instance_postgresql_t;
+
+//
+
+PGconn*
+__db_instance_postgresql_choose_conn(
+    db_instance_postgresql_t    *the_db
+)
+{
+    pthread_t           self = pthread_self();
+    
+    if ( the_db->db_conn_async && pthread_equal(self, the_db->async_thread) ) return the_db->db_conn_async;
+    if ( the_db->db_conn ) return the_db->db_conn;
+    ERROR("Database:  no connection present for thread 0x%llx (main=0x%llx, async=0x%llx)",
+        (unsigned long long)self, (unsigned long long)the_db->main_thread, (unsigned long long)the_db->async_thread);
+    return NULL;
+}
 
 //
 
@@ -189,6 +208,9 @@ __db_instance_postgresql_alloc(
                             &db_driver_postgresql_callbacks, base_bytes + extra_bytes);
     if ( new_instance ) {
         void        *p = (void*)new_instance + base_bytes;
+        
+        /* Initialize the thread id: */
+        new_instance->main_thread = pthread_self();
         
 #define DB_INSTANCE_POSTGRESQL_P_INC(T,N)     { size_t dp = (sizeof(T) * (N)); p += dp; extra_bytes -= dp; }
         
@@ -312,7 +334,7 @@ __db_instance_postgresql_open(
             if ( error_msg ) *error_msg = "General connection failure";
             return false;
         } else if ( (THE_DB->base.options & db_options_no_pam_logging) == db_options_no_pam_logging ) {
-            DEBUG("Database: connection okay");  
+            DEBUG("Database: connection okay (thread 0x%llx / 0x%llx)", (unsigned long long)pthread_self(), (unsigned long long)THE_DB->main_thread);  
         } else {
             char                *db_log_stmt_query = NULL;
             int                 db_log_stmt_query_len;
@@ -338,10 +360,15 @@ __db_instance_postgresql_open(
                     DEBUG("Database: logging query prepared");
                 } else {
                     if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, PQerrorMessage(THE_DB->db_conn), -1);
+                    PQfinish(THE_DB->db_conn);
+                    THE_DB->db_conn = NULL;
                     return false;
                 }
             } else {
                 if ( error_msg ) *error_msg = "failed to generate prepared query statement";
+                PQfinish(THE_DB->db_conn);
+                THE_DB->db_conn = NULL;
+                return false;
             }
         }
         if ( THE_DB->base.blocklist_async_notification_callback ) {
@@ -381,8 +408,9 @@ __db_instance_postgresql_log_one_event(
 )
 {
     db_instance_postgresql_t    *THE_DB = (db_instance_postgresql_t*)the_db;
+    PGconn                      *db_conn = __db_instance_postgresql_choose_conn(THE_DB);
     
-    if ( THE_DB->db_conn ) {
+    if ( db_conn ) {
         const char*     param_values[DB_INSTANCE_POSTGRESQL_LOG_STMT_NPARAMS];
         char            src_port_str[32], sshd_pid_str[32];
         PGresult        *db_result;
@@ -398,7 +426,7 @@ __db_instance_postgresql_log_one_event(
         param_values[4] = sshd_pid_str;
         param_values[5] = the_event->uid;
         param_values[6] = the_event->log_date;
-        db_result = PQexecPrepared(THE_DB->db_conn, db_postgresql_log_stmt_name, db_postgresql_log_stmt_nparams,
+        db_result = PQexecPrepared(db_conn, db_postgresql_log_stmt_name, db_postgresql_log_stmt_nparams,
                             param_values, NULL, NULL, 0);
         db_rc = PQresultStatus(db_result);
         PQclear(db_result);
@@ -415,7 +443,7 @@ __db_instance_postgresql_log_one_event(
                     the_event->dst_ipaddr);
                 return true;
             default: {
-                if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, PQerrorMessage(THE_DB->db_conn), -1);
+                if ( error_msg ) *error_msg = __db_instance_set_last_error(the_db, PQerrorMessage(db_conn), -1);
                 break;
             }
         }
@@ -472,8 +500,9 @@ __db_instance_postgresql_blocklist_enum_open(
     db_instance_postgresql_blocklist_enum_t *new_enum = NULL;
     PGresult                                *qres = NULL;
     int                                     nrows;
+    PGconn                                  *db_conn = __db_instance_postgresql_choose_conn(THE_DB);
     
-    if ( THE_DB->db_conn ) {
+    if ( db_conn ) {
         char                *db_blocklist_stmt_query = NULL;
         int                 db_blocklist_stmt_query_len;
         const char          *schema= (THE_DB->firewall_schema && *THE_DB->firewall_schema) ? 
@@ -484,7 +513,7 @@ __db_instance_postgresql_blocklist_enum_open(
                                             schema ? schema : "",
                                             schema ? "." : "");
         if ( db_blocklist_stmt_query_len && db_blocklist_stmt_query ) {
-            qres = PQexec(THE_DB->db_conn, db_blocklist_stmt_query);
+            qres = PQexec(db_conn, db_blocklist_stmt_query);
             free((void*)db_blocklist_stmt_query);
             if ( qres && (PQresultStatus(qres) == PGRES_TUPLES_OK) ) {
                 if ( (nrows = PQntuples(qres)) > 0 ) {
@@ -507,7 +536,7 @@ __db_instance_postgresql_blocklist_enum_open(
             } else if ( qres ) {
                 ERROR("Database:  blocklist enum:  failed to execute block list query:  %s", PQresultErrorMessage(qres));
             } else {
-                ERROR("Database:  blocklist enum:  failed to execute block list query:  %s", PQerrorMessage(THE_DB->db_conn));
+                ERROR("Database:  blocklist enum:  failed to execute block list query:  %s", PQerrorMessage(db_conn));
             }
             if ( ! new_enum && qres ) PQclear(qres);
         }
@@ -524,12 +553,24 @@ __db_instance_postgresql_blocklist_async_notification_thread(
 {
     db_instance_postgresql_t    *THE_DB = (db_instance_postgresql_t*)the_db;
     int                         rc, pgfd;
+        
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &rc);
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, &rc);
     
-    
-    INFO("Database:  notification listener thread:  waiting for Postgres connection...");
+    INFO("Database:  notification listener thread:  waiting for base Postgres connection...");
     while ( ! THE_DB->db_conn ) sleep(1);
     
-    pgfd = PQsocket(THE_DB->db_conn);
+    /* Create our own connection for the sake of thread safety: */
+    DEBUG("Database:  notification listener thread:  creating our own Postgres connection...");
+    while ( ! THE_DB->db_conn_async ) {
+        THE_DB->db_conn_async = PQconnectdbParams(THE_DB->conn_keys, THE_DB->conn_values, 0);
+        if ( ! THE_DB->db_conn_async ) {
+            WARN("Database:  notification listener thread:  waiting 5 seconds to try again...");
+            sleep(5);
+        }
+    }
+    THE_DB->async_thread = pthread_self();
+    pgfd = PQsocket(THE_DB->db_conn_async);
     if ( pgfd >= 0 ) {
         char                    *db_notify_stmt_query = NULL;
         int                     db_notify_stmt_query_len;
@@ -537,24 +578,21 @@ __db_instance_postgresql_blocklist_async_notification_thread(
         
         INFO("Database:  notification listener thread:  Postgres socket: fd = %d", pgfd);
         
-        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &rc);
-        pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, &rc);
-        
         // Prep the query:
         if ( THE_DB->firewall_notify_channel ) {
             db_notify_stmt_query_len = asprintf(&db_notify_stmt_query, "UNLISTEN %s", THE_DB->firewall_notify_channel);
             if ( db_notify_stmt_query_len && db_notify_stmt_query ) {
                 INFO("Database:  notification listener thread:  exec %s query", db_notify_stmt_query + 2);
                 // Use the query string minus the leading "UN":
-                qres = PQexec(THE_DB->db_conn, db_notify_stmt_query + 2);
+                qres = PQexec(THE_DB->db_conn_async, db_notify_stmt_query + 2);
             } else {
                 // Fall back to generic notification listening:
                 INFO("Database:  notification listener thread:  exec LISTEN query");
-                qres = PQexec(THE_DB->db_conn, "LISTEN");
+                qres = PQexec(THE_DB->db_conn_async, "LISTEN");
             }
         } else {
             INFO("Database:  notification listener thread:  exec LISTEN query");
-            qres = PQexec(THE_DB->db_conn, "LISTEN");
+            qres = PQexec(THE_DB->db_conn_async, "LISTEN");
         }
         if ( qres ) {
             ExecStatusType      qres_status = PQresultStatus(qres);
@@ -562,7 +600,7 @@ __db_instance_postgresql_blocklist_async_notification_thread(
             PQclear(qres);
             if ( qres_status == PGRES_COMMAND_OK ) {
                 DEBUG("Database:  notification listener thread:  entering runloop");
-                while ( THE_DB->is_notify_running ) {
+                while ( THE_DB->is_notify_running && (pgfd >= 0) ) {
                     struct pollfd       fds = { .fd = pgfd, .events = POLLIN, .revents = 0 };
                     
                     rc = poll(&fds, 1, 60);
@@ -572,34 +610,38 @@ __db_instance_postgresql_blocklist_async_notification_thread(
                         
                         // It must be data on the socket...
                         DEBUG("Database:  notification listener thread:  data waiting on socket");
-                        PQconsumeInput(THE_DB->db_conn);
-                        while ((pgnotify = PQnotifies(THE_DB->db_conn)) != NULL) {
-                            PQfreemem(pgnotify);
-                            nnotify++;
-                        }
-                        if ( nnotify > 0 ) {
-                            db_blocklist_enum_ref   eblocklist;
-                            
-                            INFO("Database:  notification listener thread:  %d notification(s) waiting", nnotify);
-                            pthread_mutex_lock(&THE_DB->base.blocklist_async_notification_lock);
-                            eblocklist = db_blocklist_enum_open((db_ref)the_db, NULL);
-                            INFO("Database:  notification listener thread:  dispatching block list to callback");
-                            THE_DB->base.blocklist_async_notification_callback(
-                                    eblocklist,
-                                    THE_DB->base.blocklist_async_notification_context);
-                            if ( eblocklist ) db_blocklist_enum_close(eblocklist);
-                            pthread_mutex_unlock(&THE_DB->base.blocklist_async_notification_lock);
+                        if ( PQconsumeInput(THE_DB->db_conn_async) ) {
+                            while ((pgnotify = PQnotifies(THE_DB->db_conn_async)) != NULL) {
+                                PQfreemem(pgnotify);
+                                nnotify++;
+                            }
+                            if ( nnotify > 0 ) {
+                                db_blocklist_enum_ref   eblocklist;
+                                
+                                INFO("Database:  notification listener thread:  %d notification(s) waiting", nnotify);
+                                pthread_mutex_lock(&THE_DB->base.blocklist_async_notification_lock);
+                                eblocklist = db_blocklist_enum_open((db_ref)the_db, NULL);
+                                INFO("Database:  notification listener thread:  dispatching block list to callback");
+                                THE_DB->base.blocklist_async_notification_callback(
+                                        eblocklist,
+                                        THE_DB->base.blocklist_async_notification_context);
+                                if ( eblocklist ) db_blocklist_enum_close(eblocklist);
+                                pthread_mutex_unlock(&THE_DB->base.blocklist_async_notification_lock);
+                            }
+                        } else {
+                            ERROR("Database:  notification listener thread:  failed to consume async input: %s", PQerrorMessage(THE_DB->db_conn_async));
                         }
                     }
+                    pgfd = PQsocket(THE_DB->db_conn_async);
                 }
                 DEBUG("Database:  notification listener thread:  exited runloop");
                 
                 // Stop listening for notifications:
                 INFO("Database:  notification listener thread:  exec UNLISTEN query");
                 if ( db_notify_stmt_query ) {
-                    qres = PQexec(THE_DB->db_conn, db_notify_stmt_query);
+                    qres = PQexec(THE_DB->db_conn_async, db_notify_stmt_query);
                 } else {
-                    qres = PQexec(THE_DB->db_conn, "UNLISTEN");
+                    qres = PQexec(THE_DB->db_conn_async, "UNLISTEN");
                 }
                 if ( qres ) PQclear(qres);
             } else {
@@ -611,6 +653,8 @@ __db_instance_postgresql_blocklist_async_notification_thread(
     } else {
         ERROR("Database:  Postgres socket unavailable: fd = %d", pgfd);
     }
+    PQfinish(THE_DB->db_conn_async);
+    THE_DB->db_conn_async = NULL;
     return NULL;
 }
 
