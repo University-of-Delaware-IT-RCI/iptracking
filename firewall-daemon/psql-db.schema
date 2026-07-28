@@ -35,7 +35,7 @@ CREATE RULE firewall_static_rules_raw_delete AS ON DELETE TO firewall.static_rul
 --
 CREATE OR REPLACE FUNCTION firewall.static_rules_parent_count(target_ip CIDR, target_disposition firewall.disposition_t) RETURNS INTEGER AS $$
     SELECT COUNT(*) AS parent_count FROM firewall.static_rules_raw
-        WHERE target_ip <<= ip_entity AND disposition = target_disposition;
+        WHERE target_ip << ip_entity AND disposition = target_disposition;
 $$ LANGUAGE SQL;
 --
 -- Create a view that filters-out any records that are contained within
